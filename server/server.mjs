@@ -40,7 +40,9 @@ async function file(req, res, path) {
 
 export function handle(req, res) {
   let path;
-  try { path = decodeURIComponent(new URL(req.url, 'http://x').pathname); } catch { return send(res, 400, 'text/plain', 'Bad request'); }
+  // The path straight from the request line, without its ?query. (Not new URL(): it reads a path
+  // starting with // as another host, so "//" became a 400.) file() keeps it inside site/.
+  try { path = decodeURIComponent(req.url.split('?')[0]); } catch { return send(res, 400, 'text/plain', 'Bad request'); }
   if (path === '/healthz') return send(res, 200, 'application/json', JSON.stringify({ ok: true }), { 'Cache-Control': 'no-store' });
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'text/plain', 'Method not allowed', { Allow: 'GET, HEAD' });
   return file(req, res, path);
