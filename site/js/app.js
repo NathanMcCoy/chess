@@ -700,8 +700,10 @@ function applyView(v) {
 function onlineResult(v) {
   if (v.status === 'aborted') return { score: '*', winner: null, reason: 'aborted', text: 'The game was called off.' };
   if (v.status !== 'over' || !v.result) return null;
-  const { winner, reason } = v.result, you = online.you;
-  const score = winner === 'w' ? '1-0' : winner === 'b' ? '0-1' : '1/2-1/2';
+  const { winner, reason, points } = v.result, you = online.you;
+  // Hexagonal chess scores a stalemate 3/4 to the side that gave it, 1/4 to the other
+  const frac = p => ({ 0.25: '¼', 0.75: '¾' })[p] ?? String(p);
+  const score = points ? `${frac(points.w)}-${frac(points.b)}` : winner === 'w' ? '1-0' : winner === 'b' ? '0-1' : '1/2-1/2';
   const wins = w => (w === you ? 'You win!' : you ? `${Them()} wins.` : `${COLOR_NAME[w]} wins.`);
   const loser = winner && otherSide(winner);
   const texts = {
@@ -709,7 +711,9 @@ function onlineResult(v) {
     resign: () => (loser === you ? 'You resigned.' : you ? `${Them()} resigned. You win!` : `${COLOR_NAME[loser]} resigned.`),
     time: () => (loser === you ? 'Your time ran out.' : you ? `${Them()} ran out of time. You win!` : `${COLOR_NAME[loser]} ran out of time.`),
     agreement: () => 'A draw, by agreement.',
-    stalemate: () => 'Stalemate: a draw.',
+    stalemate: () => (points
+      ? `Stalemate: ${COLOR_NAME[points.w > points.b ? 'w' : 'b']} gave it, and scores ¾ to ¼.`
+      : 'Stalemate: a draw.'),
     material: () => 'A draw: neither side has enough pieces left to checkmate.',
     repetition: () => 'A draw by repetition: the same position came up three times.',
     fifty: () => 'A draw by the fifty-move rule.',
