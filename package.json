@@ -1,0 +1,14 @@
+{
+  "name": "pacificfish-chess",
+  "private": true,
+  "type": "module",
+  "description": "The chess site at chess.pacificfish.ca. The site itself is site/ and needs no build; this file is only for the tests.",
+  "license": "GPL-3.0-or-later",
+  "scripts": {
+    "test": "node tests/run.mjs",
+    "serve": "node tests/server.mjs"
+  },
+  "devDependencies": {
+    "playwright": "1.64.1"
+  }
+}
