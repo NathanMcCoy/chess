@@ -30,6 +30,26 @@ const STEPS = [
      data TEXT NOT NULL,                          -- the game as the browser saves it (JSON)
      updated INTEGER NOT NULL
    );`,
+  // 2: games between people (challenge links), with their clocks. Times are in milliseconds.
+  `CREATE TABLE games (
+     id TEXT PRIMARY KEY,                         -- the code in the game's link
+     variant TEXT NOT NULL,
+     start TEXT NOT NULL,                         -- the starting position, in the variant's own form
+     moves TEXT NOT NULL DEFAULT '[]',            -- JSON list of moves in the variant's notation
+     status TEXT NOT NULL,                        -- 'waiting' (for the friend), 'playing', 'over', 'aborted'
+     result TEXT,                                 -- JSON { winner: 'w' | 'b' | null, reason } once over
+     draw_offer TEXT,                             -- 'w' or 'b' while one side offers a draw
+     w_seat TEXT, b_seat TEXT,                    -- SHA-256 of each side's seat key (the key stays in their browser)
+     w_account INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+     b_account INTEGER REFERENCES accounts(id) ON DELETE SET NULL,
+     w_base INTEGER NOT NULL, w_inc INTEGER NOT NULL,   -- each side's own time control
+     b_base INTEGER NOT NULL, b_inc INTEGER NOT NULL,
+     w_left INTEGER NOT NULL, b_left INTEGER NOT NULL,  -- time left when the current turn began
+     turn_started INTEGER,                        -- when the side to move's clock started (null: no clock running yet)
+     created INTEGER NOT NULL,
+     updated INTEGER NOT NULL
+   );
+   CREATE INDEX games_status ON games(status);`,
 ];
 
 export function openDb(dir) {

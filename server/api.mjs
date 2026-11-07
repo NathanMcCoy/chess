@@ -5,10 +5,17 @@
 //   GET  /api/me                                              -> { name } (null when signed out)
 //   GET  /api/game                                            -> { data, updated } (data null if none)
 //   PUT  /api/game     { data }                               -> { updated }
+// Games by challenge link (games.mjs). A seat key comes in the body, or the X-Seat header for GETs:
+//   POST /api/games    { variant, color, times }              -> 201 { id, seat, color }
+//   GET  /api/games/ID                                        -> the game ("you": your side, if any)
+//   GET  /api/games/ID/events                                 -> the game, then again on every change (SSE)
+//   POST /api/games/ID/join                                   -> { seat, color }
+//   POST /api/games/ID/move { seat, move }, and /resign, /draw (offer or accept), /decline, /abort { seat }
 // Anything that changes something must be JSON with the header "X-Requested-With: chess", from this
 // site's own pages (Origin), so another site can't make a visitor's browser do it.
 import { HEADERS } from './headers.mjs';
 import { AccountError, signUp, signIn, startSession, sessionAccount, endSession, SESSION_DAYS } from './accounts.mjs';
+import { GameError, makeGames } from './games.mjs';
 
 const COOKIE = 'chess_session';
 const MAX_BODY = 256 * 1024;
@@ -59,10 +66,33 @@ class Limit {
 }
 
 export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
-  const limits = { signin: new Limit(30, 15), signup: new Limit(5, 60) };
+  const limits = { signin: new Limit(30, 15), signup: new Limit(5, 60), games: new Limit(30, 60) };
+
+  // Everyone with a game open gets it again, whole, whenever it changes: Server-Sent Events, a
+  // response the browser keeps open (EventSource; it reconnects by itself). A comment line every
+  // 25 s keeps quiet connections from being closed on the way (Cloudflare drops idle ones).
+  const watchers = new Map();   // game id -> the responses watching it
+  const games = db ? makeGames(db, { now, changed: id => tell(id) }) : null;
+  function tell(id) {
+    const open = watchers.get(id);
+    if (!open || !open.size) return;
+    let data;
+    try { data = JSON.stringify(games.get(id)); } catch { return; }
+    for (const res of open) res.write(`event: game\ndata: ${data}\n\n`);
+  }
+  const beat = setInterval(() => { for (const open of watchers.values()) for (const res of open) res.write(': still here\n\n'); }, 25_000);
+  beat.unref?.();
+  function watch(req, res, id) {
+    const first = JSON.stringify(games.get(id));   // a 404 here, before the stream starts, if there's no such game
+    res.writeHead(200, { ...HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+    res.write(`retry: 3000\nevent: game\ndata: ${first}\n\n`);
+    if (!watchers.has(id)) watchers.set(id, new Set());
+    watchers.get(id).add(res);
+    req.on('close', () => { const open = watchers.get(id); open?.delete(res); if (open && !open.size) watchers.delete(id); });
+  }
   const who = req => req.headers['cf-connecting-ip'] || req.socket.remoteAddress || '?';
 
-  return async function api(req, res, path) {
+  async function api(req, res, path) {
     try {
       if (!db) throw new AccountError(503, 'Accounts aren’t available on this server.');
       const changes = req.method !== 'GET' && req.method !== 'HEAD';
@@ -112,11 +142,31 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
           return reply(res, 200, { updated });
         }
       }
+      const g = path.match(/^\/api\/games(?:\/([\w-]{1,20})(?:\/(events|join|move|resign|draw|decline|abort))?)?$/);
+      if (g) {
+        const [, id, action] = g;
+        if (!id && req.method === 'POST') {
+          if (!limits.games.take(who(req), now())) throw new AccountError(429, 'Too many new games from here. Try again later.');
+          const body = await readJson(req);
+          return reply(res, 201, games.create({ variant: body.variant, color: body.color, times: body.times, account: me }));
+        }
+        if (id && !action && req.method === 'GET') return reply(res, 200, games.get(id, req.headers['x-seat'], me));
+        if (id && action === 'events' && req.method === 'GET') return watch(req, res, id);
+        if (id && action && req.method === 'POST') {
+          const body = await readJson(req);
+          const act = { join: () => games.join(id, body.seat, me), move: () => games.move(id, body.seat, me, body.move),
+            resign: () => games.resign(id, body.seat, me), draw: () => games.offerDraw(id, body.seat, me),
+            decline: () => games.declineDraw(id, body.seat, me), abort: () => games.abort(id, body.seat, me) }[action];
+          return reply(res, 200, act());
+        }
+      }
       throw new AccountError(404, 'Not found');
     } catch (e) {
-      if (e instanceof AccountError) return reply(res, e.status, { error: e.message }, e.status === 413 ? { Connection: 'close' } : {});
+      if (e instanceof AccountError || e instanceof GameError) return reply(res, e.status, { error: e.message }, e.status === 413 ? { Connection: 'close' } : {});
       console.error(e);
       return reply(res, 500, { error: 'Something went wrong on the server.' });
     }
-  };
+  }
+  api.stop = () => { clearInterval(beat); games?.stop(); for (const open of watchers.values()) for (const res of open) res.end(); watchers.clear(); };
+  return api;
 }

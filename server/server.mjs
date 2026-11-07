@@ -60,7 +60,7 @@ export function start({ port = 3000, host = '0.0.0.0', dataDir = null, secureCoo
   const server = createServer((req, res) => {
     Promise.resolve(handle(req, res, api)).catch(() => { if (!res.headersSent) send(res, 500, 'text/plain', 'Something went wrong'); });
   });
-  server.on('close', () => db?.close());
+  server.on('close', () => { api.stop(); db?.close(); });   // timers and open game streams first
   return new Promise(ok => server.listen(port, host, () => ok(server)));
 }
 
