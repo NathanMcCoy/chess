@@ -371,3 +371,35 @@ body.reviewing .actions, body.reviewing .hint { display: none; }
   .panel { max-height: none; }
   .moves { max-height: 180px; }
 }
+
+/* Hexagonal chess (/hex): the SVG board, with the piece pictures laid over it */
+.variant-link { color: var(--accent); font-weight: 600; text-decoration: none; }
+.variant-link:hover { text-decoration: underline; }
+.hexboard {
+  position: relative; aspect-ratio: 19 / 21.2;
+  width: min(calc(100vw - 32px), calc((100vh - 150px) * 19 / 21.2), 680px);
+  touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
+}
+.hex-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
+.hexboard .hex-pieces { position: absolute; inset: 0; pointer-events: none; box-sizing: border-box; }
+.hexboard .hex-pieces piece.dragging { z-index: 11; }
+.hex-cell { stroke: var(--bg); stroke-width: 0.04; }
+.hex-cell.c0 { fill: var(--light-sq); }
+.hex-cell.c1 { fill: #b2c5cf; }
+.hex-cell.c2 { fill: var(--dark-sq); }
+.hex-mark { stroke: none; }
+.hex-mark.last { fill: var(--highlight); }
+.hex-mark.selected { fill: rgba(242, 196, 109, 0.75); }
+.hex-mark.check { fill: rgba(224, 60, 40, 0.8); }
+.hex-dest { fill: var(--dest); }
+.hex-dest.capture { fill: none; stroke: var(--dest); stroke-width: 0.13; }
+.hex-label { fill: var(--muted); font: 700 0.62px system-ui, sans-serif; text-anchor: middle; dominant-baseline: middle; }
+.hex-page .player.to-move .name::after { content: " · to move"; color: var(--accent); font-weight: 600; }
+.hex-page .actions #undo, .hex-page .actions #flip { grid-column: auto; }
+.hex-rules { color: var(--muted); font-size: 0.88rem; }
+.hex-rules summary { cursor: pointer; color: var(--text); }
+.hex-rules ul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 4px; }
+.other-variant a { color: var(--accent); }
+@media (max-width: 760px) {
+  .hexboard { width: min(calc(100vw - 32px), 680px); }
+}
