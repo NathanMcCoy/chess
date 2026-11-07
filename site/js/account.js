@@ -71,6 +71,18 @@ function openingPad(el, onChange) {
   };
 }
 
+// "Sign out?", in the site's own confirm box (the one Resign uses), never a browser popup
+function confirmSignOut() {
+  const box = $('confirm');
+  $('confirm-text').textContent = 'Sign out? Your game stays in your account, and on this device.';
+  $('confirm-yes').textContent = 'Sign out';
+  box.returnValue = '';
+  return new Promise(resolve => {
+    box.addEventListener('close', () => resolve(box.returnValue === 'yes'), { once: true });
+    box.showModal();
+  });
+}
+
 const moveText = names => names.map((n, i) => (i % 2 ? n : `${i / 2 + 1}. ${n}`)).join(' ');
 const same = (a, b) => a.length === b.length && a.every((m, i) => m === b[i]);
 
@@ -118,8 +130,8 @@ export function initAccounts({ saved, useSaved }) {
   const dlg = $('account');
   let mode = 'signin';   // 'signin' or 'signup'
   let step = 'choose';   // signing up: 'choose', then 'practice' (PRACTICE times)
-  let chosen = null;     // the opening being practised
-  let practised = 0;
+  let chosen = null;     // the opening being practiced
+  let practiced = 0;
   const pad = openingPad($('acc-board'), moves => { $('acc-error').textContent = ''; describe(moves); });
 
   async function getBook() {
@@ -130,9 +142,9 @@ export function initAccounts({ saved, useSaved }) {
   }
 
   async function describe(moves) {
-    const practising = mode === 'signup' && step === 'practice';
-    // While practising the moves aren't shown: it's from memory
-    $('acc-moves').textContent = practising ? `${moves.length} move${moves.length === 1 ? '' : 's'} played` : moveText(pad.names()) || ' ';
+    const practicing = mode === 'signup' && step === 'practice';
+    // While practicing the moves aren't shown: it's from memory
+    $('acc-moves').textContent = practicing ? `${moves.length} move${moves.length === 1 ? '' : 's'} played` : moveText(pad.names()) || ' ';
     const meter = $('acc-meter');
     meter.hidden = !(mode === 'signup' && step === 'choose');
     if (meter.hidden) return;
@@ -148,8 +160,8 @@ export function initAccounts({ saved, useSaved }) {
     $('acc-name').autocomplete = signup ? 'off' : 'username';
     let text, go;
     if (!signup) { text = 'Play your secret opening: both sides’ moves, from the start.'; go = 'Sign in'; }
-    else if (step === 'choose') { text = 'Choose your secret opening: play both sides’ moves, from the start. It’s your password, so pick one you’ll remember.'; go = 'Next: practise it'; }
-    else { text = `Now play it again from memory (${practised + 1} of ${PRACTICE}).`; go = practised + 1 < PRACTICE ? 'Check' : 'Check and create account'; }
+    else if (step === 'choose') { text = 'Choose your secret opening: play both sides’ moves, from the start. It’s your password, so pick one you’ll remember.'; go = 'Next: practice it'; }
+    else { text = `Now play it again from memory (${practiced + 1} of ${PRACTICE}).`; go = practiced + 1 < PRACTICE ? 'Check' : 'Check and create account'; }
     $('acc-step').textContent = text;
     $('acc-go').textContent = go;
     $('acc-again').hidden = !(signup && step === 'practice');
@@ -160,7 +172,7 @@ export function initAccounts({ saved, useSaved }) {
   }
 
   function open(which = 'signin') {
-    mode = which; step = 'choose'; chosen = null; practised = 0;
+    mode = which; step = 'choose'; chosen = null; practiced = 0;
     $('acc-error').textContent = '';
     pad.clear();
     dlg.showModal();
@@ -185,7 +197,7 @@ export function initAccounts({ saved, useSaved }) {
         return;
       }
       if (step === 'choose') {
-        chosen = moves; step = 'practice'; practised = 0;
+        chosen = moves; step = 'practice'; practiced = 0;
         pad.clear();
         return setUp();
       }
@@ -193,9 +205,9 @@ export function initAccounts({ saved, useSaved }) {
         pad.clear();
         return fail('That’s not the same as your opening. Try again, or choose a different one.');
       }
-      practised++;
+      practiced++;
       pad.clear();
-      if (practised < PRACTICE) return setUp();
+      if (practiced < PRACTICE) return setUp();
       me = (await api('/api/signup', { name, secret: { variant: VARIANT, moves: chosen } })).name;
       writeSync({ name: me, dirty: true, updated: null });
       dlg.close();
@@ -203,7 +215,7 @@ export function initAccounts({ saved, useSaved }) {
       await push();   // your game on this device becomes your account's
     } catch (e) {
       // A taken name only shows at the end of signing up: go back to choosing, keeping the opening
-      if (e.status === 409) { step = 'choose'; practised = 0; setUp(); }
+      if (e.status === 409) { step = 'choose'; practiced = 0; setUp(); }
       fail(e.message);
     } finally {
       $('acc-go').disabled = false;
@@ -217,10 +229,11 @@ export function initAccounts({ saved, useSaved }) {
   $('acc-go').onclick = go;
   $('acc-undo').onclick = () => pad.undo();
   $('acc-clear').onclick = () => pad.clear();
-  $('acc-again').onclick = () => { step = 'choose'; chosen = null; practised = 0; pad.clear(); setUp(); };
+  $('acc-again').onclick = () => { step = 'choose'; chosen = null; practiced = 0; pad.clear(); setUp(); };
   $('acc-cancel').onclick = () => dlg.close();
   $('acc-open').onclick = () => open('signin');
   $('acc-out').onclick = async () => {
+    if (!(await confirmSignOut())) return;
     await push();   // anything not yet sent goes before signing out
     try { await api('/api/signout', {}); } catch { /* the cookie goes anyway when it runs out */ }
     me = null;

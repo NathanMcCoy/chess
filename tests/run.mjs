@@ -333,13 +333,14 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   await playOpening(acc, ITALIAN, touch);
   check(who, (await accText(acc, '#acc-moves')) === '1. e4 e5 2. Nf3 Nc6 3. Bc4', 'the opening is shown as it’s played', await accText(acc, '#acc-moves'));
   await acc.waitForFunction(() => document.querySelector('#acc-meter p').textContent.length > 0);
+  check(who, (await accText(acc, '#acc-go')) === 'Next: practice it', 'the button says Next: practice it', await accText(acc, '#acc-go'));
   check(who, await acc.locator('#acc-meter').getAttribute('data-level') === 'weak' && /Italian/.test(await accText(acc, '#acc-meter p')),
     'the meter calls the Italian Game weak, by name', await accText(acc, '#acc-meter p'));
   await acc.locator('#acc-go').click();
   check(who, /from memory \(1 of 2\)/.test(await accText(acc, '#acc-step')) && (await accText(acc, '#acc-moves')) === '0 moves played' && await acc.locator('#acc-meter').isHidden(),
     'then it asks for it again from memory, without showing the moves');
   await playOpening(acc, 'e2e4', touch);
-  check(who, (await accText(acc, '#acc-moves')) === '1 move played', 'practising counts the moves but doesn’t name them');
+  check(who, (await accText(acc, '#acc-moves')) === '1 move played', 'practicing counts the moves but doesn’t name them');
   await acc.locator('#acc-go').click();
   check(who, /not the same/.test(await accText(acc, '#acc-error')), 'a different opening is caught', await accText(acc, '#acc-error'));
   await playOpening(acc, ITALIAN, touch);
@@ -387,7 +388,15 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   await acc.reload();
   await acc.waitForFunction(() => document.querySelectorAll('#moves button').length === 4, null, { timeout: 10000 }).catch(() => {});
   check(who, (await acc.locator('#moves button').count()) === 4, 'a move on the other browser reaches the first', `${await acc.locator('#moves button').count()} moves`);
+  // Sign out asks first, in the site's own box: Cancel keeps you signed in
   await other.locator('#acc-out').click();
+  const confirmOut = other.locator('#confirm[open]');
+  await confirmOut.waitFor();
+  check(who, /^Sign out\?/.test(await confirmOut.locator('#confirm-text').innerText()) && (await confirmOut.locator('#confirm-yes').innerText()) === 'Sign out', 'Sign out asks first');
+  await confirmOut.getByRole('button', { name: 'Cancel' }).click();
+  check(who, await other.locator('#acc-who').isVisible() && (await other.evaluate(async () => (await (await fetch('/api/me')).json()).name)) === who, 'and Cancel keeps you signed in');
+  await other.locator('#acc-out').click();
+  await confirmOut.getByRole('button', { name: 'Sign out' }).click();
   await other.locator('#acc-open:not([hidden])').waitFor();
   check(who, await other.locator('#acc-who').isHidden() && (await other.evaluate(async () => (await (await fetch('/api/me')).json()).name)) === null, 'Sign out signs out');
   await acc.close();
