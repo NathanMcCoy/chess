@@ -1,12 +1,14 @@
-// The chess site's server: serves site/ and answers /healthz. Node's own modules only, for now.
-// Accounts and live games (stage 3) will be added here.
-//   node server/server.mjs              listens on PORT (default 3000)
-//   node server/server.mjs --port 8090  for trying the site on this PC (npm run serve)
+// The chess site's server: serves site/, answers /healthz, and runs the accounts API (/api/, in
+// api.mjs) with its data in DATA_DIR. Node's own modules only.
+//   node server/server.mjs              listens on PORT (default 3000), data in DATA_DIR
+//   node server/server.mjs --port 8090  for trying the site on this PC (npm run serve): data in .data/
 import { createServer } from 'node:http';
 import { readFile, stat } from 'node:fs/promises';
 import { extname, join, normalize, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { HEADERS } from './headers.mjs';
+import { makeApi } from './api.mjs';
+import { openDb } from './db.mjs';
 
 const SITE = fileURLToPath(new URL('../site/', import.meta.url));
 const TYPES = {
@@ -38,21 +40,27 @@ async function file(req, res, path) {
   }
 }
 
-export function handle(req, res) {
+export function handle(req, res, api) {
   let path;
   // The path straight from the request line, without its ?query. (Not new URL(): it reads a path
   // starting with // as another host, so "//" became a 400.) file() keeps it inside site/.
   try { path = decodeURIComponent(req.url.split('?')[0]); } catch { return send(res, 400, 'text/plain', 'Bad request'); }
   if (path === '/healthz') return send(res, 200, 'application/json', JSON.stringify({ ok: true }), { 'Cache-Control': 'no-store' });
+  if (path.startsWith('/api/') && api) return api(req, res, path);
   if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, 'text/plain', 'Method not allowed', { Allow: 'GET, HEAD' });
   return file(req, res, path);
 }
 
-// Starts listening; port 0 picks a free one (the tests do). Resolves with the http.Server.
-export function start({ port = 3000, host = '0.0.0.0' } = {}) {
+// Starts listening; port 0 picks a free one (the tests do). Resolves with the http.Server. Without
+// a dataDir there are no accounts: /api/ answers 503. secureCookies: the session cookie is sent
+// over HTTPS only (Cloudflare's, in front of the server); off only for trying it on this PC.
+export function start({ port = 3000, host = '0.0.0.0', dataDir = null, secureCookies = true } = {}) {
+  const db = dataDir ? openDb(dataDir) : null;
+  const api = makeApi({ db, secureCookies });
   const server = createServer((req, res) => {
-    Promise.resolve(handle(req, res)).catch(() => { if (!res.headersSent) send(res, 500, 'text/plain', 'Something went wrong'); });
+    Promise.resolve(handle(req, res, api)).catch(() => { if (!res.headersSent) send(res, 500, 'text/plain', 'Something went wrong'); });
   });
+  server.on('close', () => db?.close());
   return new Promise(ok => server.listen(port, host, () => ok(server)));
 }
 
@@ -61,7 +69,9 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === normalize(process.argv
   const flag = process.argv.indexOf('--port');
   const port = flag > 0 ? Number(process.argv[flag + 1]) : Number(process.env.PORT) || 3000;
   const host = flag > 0 ? '127.0.0.1' : '0.0.0.0';   // on this PC, only this PC; in the container, its own network
-  const server = await start({ port, host });
+  const local = flag > 0;
+  const dataDir = process.env.DATA_DIR || (local ? fileURLToPath(new URL('../.data/', import.meta.url)) : null);
+  const server = await start({ port, host, dataDir, secureCookies: !local });
   console.log(`Chess on http://${host === '0.0.0.0' ? 'localhost' : host}:${server.address().port}/`);
   const stop = () => { server.close(() => process.exit(0)); setTimeout(() => process.exit(0), 5000).unref(); };
   process.on('SIGTERM', stop);
