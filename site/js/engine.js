@@ -2,14 +2,40 @@
 // standard text protocol for chess engines: we send lines like "go depth 6", it answers with lines
 // like "bestmove e2e4".
 const ENGINE = 'vendor/stockfish/stockfish-19-lite-single.js';
+// Some failures make no sound at all (a missing .wasm file: the worker just never answers), so every
+// wait has a time limit. Generous ones: a slow phone on a slow connection takes a while to fetch
+// and start the 1.8 MB engine, and the strongest level thinks for 2 s.
+const START_LIMIT_MS = 30000;
+const ANSWER_SPARE_MS = 30000;   // on top of the level's own thinking time
 
 export class Engine {
   constructor() {
+    this.failure = null;   // why it stopped working, once it has
+    this.failed = new Promise((_, reject) => { this.reject = reject; });
+    this.failed.catch(() => {});   // only ever read through race() below
     this.worker = new Worker(ENGINE);
     this.waiting = new Set();
     this.worker.onmessage = e => { for (const w of [...this.waiting]) w(String(e.data)); };
-    this.worker.onerror = e => { this.failed = e.message || 'the engine could not start'; };
-    this.ready = this.ask('uci', line => line === 'uciok').then(() => this.ask('isready', line => line === 'readyok'));
+    this.worker.onerror = e => {
+      e.preventDefault();
+      this.fail(e.message ? `it crashed (${e.message})` : 'its files couldn’t be loaded');
+    };
+    this.ready = this.within(START_LIMIT_MS, `it didn’t start within ${START_LIMIT_MS / 1000} seconds`,
+      this.ask('uci', line => line === 'uciok').then(() => this.ask('isready', line => line === 'readyok')));
+  }
+
+  // Marks the engine as broken (the first reason sticks) and stops the worker
+  fail(reason) {
+    if (this.failure) return;
+    this.failure = reason;
+    this.reject(new Error(reason));
+    this.worker.terminate();
+  }
+
+  // Waits for `promise`, but fails the engine with `reason` if that takes longer than `ms`
+  within(ms, reason, promise) {
+    const timer = setTimeout(() => this.fail(reason), ms);
+    return Promise.race([promise, this.failed]).finally(() => clearTimeout(timer));
   }
 
   // Sends a command and resolves with the first line that `done` accepts
@@ -28,15 +54,16 @@ export class Engine {
     this.worker.postMessage(`setoption name Skill Level value ${skill}`);
     this.worker.postMessage(`position fen ${fen}`);
     const limits = [depth && `depth ${depth}`, movetime && `movetime ${movetime}`].filter(Boolean).join(' ');
-    const line = await this.ask(`go ${limits}`, l => l.startsWith('bestmove'));
+    const line = await this.within((movetime || 1000) + ANSWER_SPARE_MS, 'it stopped answering',
+      this.ask(`go ${limits}`, l => l.startsWith('bestmove')));
     const move = line.split(/\s+/)[1];
     return move && move !== '(none)' ? move : null;
   }
 
   // Tells it to stop thinking: it answers its current "go" straight away (that answer is ignored)
-  stop() { this.worker.postMessage('stop'); }
+  stop() { if (!this.failure) this.worker.postMessage('stop'); }
 
-  newGame() { this.worker.postMessage('ucinewgame'); }
+  newGame() { if (!this.failure) this.worker.postMessage('ucinewgame'); }
 }
 
 // Ten strengths. Stockfish's own Skill Level (0 to 20) weakens its choices; the depth and time

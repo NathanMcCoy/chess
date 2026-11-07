@@ -74,7 +74,7 @@ function render() {
   const fen = shown === 0 ? startFen() : moves[shown - 1].after;
   const pos = live ? game : new Chess(fen);
   const last = moves[shown - 1];
-  const yourTurn = live && !result && !busy && game.turn() === player;
+  const yourTurn = live && !result && !busy && !engineError && game.turn() === player;
   board.set({
     fen,
     orientation,
@@ -136,7 +136,8 @@ function renderMoves(moves, shown) {
 function renderStatus(live, shown) {
   const status = $('status');
   status.classList.toggle('over', !!result && live);
-  if (engineError) status.textContent = `Stockfish couldn't start: ${engineError}`;
+  status.classList.toggle('broken', !!engineError);
+  if (engineError) status.textContent = `Stockfish isn’t working: ${engineError}. Reload the page to try again.`;
   else if (!live) status.textContent = `Looking at move ${Math.ceil(shown / 2) || 'start'}. Press ⏭ to go back to the game.`;
   else if (result) status.textContent = result.text;
   else if (busy) status.textContent = 'Stockfish is thinking…';
@@ -203,7 +204,12 @@ async function engineMove() {
     const m = legal[Math.floor(Math.random() * legal.length)];
     uci = m && m.from + m.to + (m.promotion || '');
   } else {
-    uci = await engine.bestMove(game.fen(), settings);
+    try {
+      uci = await engine.bestMove(game.fen(), settings);
+    } catch (e) {
+      if (mine === request) engineBroke(e);
+      return;
+    }
   }
   const wait = MIN_THINK_MS - (Date.now() - started);
   if (wait > 0) await new Promise(r => setTimeout(r, wait));
@@ -251,6 +257,14 @@ function renderCard(live) {
   const moves = Math.ceil(game.history().length / 2);
   const how = REASONS[result.reason] || result.text;   // games saved before reasons existed
   $('go-reason').textContent = `${how} Level ${level}, ${moves} move${moves === 1 ? '' : 's'}.`;
+}
+
+// Stockfish has stopped working: say so, and stop the game where it is (you can still look back
+// through it, download it or start over after a reload)
+function engineBroke(e) {
+  engineError = e.message || String(e);
+  busy = false;
+  render();
 }
 
 function stopEngine() {
@@ -390,7 +404,7 @@ $('resign').onclick = async () => {
 
 // --- Start -----------------------------------------------------------------------------------
 const engine = new Engine();
-engine.worker.addEventListener('error', e => { engineError = e.message || 'unknown error'; busy = false; render(); });
+engine.ready.catch(engineBroke);   // e.g. its files didn't load: say so straight away, even on your move
 if (load()) {
   render();
   if (!result && game.turn() !== player) engineMove();   // it was Stockfish's turn when the page closed
