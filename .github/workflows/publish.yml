@@ -1,0 +1,63 @@
+# Tests every pull request and every push to main; on main, also builds and publishes the image
+# ghcr.io/nathanmccoy/chess:main. When the green tick appears on the commit, press "Update from GitHub"
+# at https://apps.pacificfish.ca and the server deploys exactly that image.
+name: Test and publish
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:          # lets you run it by hand from the Actions tab
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:                  # a newer push cancels an older run of the same branch still going
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      # The browsers the tests use: WebKit (Safari's engine) for iPhone, Chromium for Android and desktop
+      - run: npx playwright install --with-deps chromium webkit
+      - run: npm test
+
+  image:
+    needs: test               # a broken push never becomes an image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      # Image names must be lowercase: NathanMcCoy/chess -> ghcr.io/nathanmccoy/chess
+      - id: name
+        run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+      # On a pull request the image is only built, to prove the Dockerfile works; on main it's published
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/amd64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: |
+            ${{ steps.name.outputs.image }}:main
+            ${{ steps.name.outputs.image }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.licenses=GPL-3.0-or-later
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

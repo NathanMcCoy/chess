@@ -5,9 +5,9 @@
   "description": "The chess site at chess.pacificfish.ca. The site itself is site/ and needs no build; this file is only for the tests.",
   "license": "GPL-3.0-or-later",
   "scripts": {
-    "test": "node --test tests/ && node tests/run.mjs",
+    "test": "node --test \"tests/*.test.mjs\" && node tests/run.mjs",
     "test:live": "node tests/run.mjs --live",
-    "serve": "node tests/server.mjs"
+    "serve": "node server/server.mjs --port 8090"
   },
   "devDependencies": {
     "playwright": "1.64.1"
