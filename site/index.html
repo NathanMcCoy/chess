@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Chess · pacificfish</title>
+  <meta name="description" content="Play chess against Stockfish at ten strengths, in your browser.">
+  <meta name="theme-color" content="#0d2a3a">
+  <link rel="stylesheet" href="vendor/chessground.base.css">
+  <link rel="stylesheet" href="vendor/chessground.cburnett.css">
+  <link rel="stylesheet" href="css/app.css">
+</head>
+<body>
+  <header class="top">
+    <a class="brand" href="https://pacificfish.ca/">pacificfish <span>chess</span></a>
+  </header>
+
+  <main class="layout">
+    <section class="play">
+      <div class="player" id="top-player"><span class="name"></span><span class="taken"></span></div>
+      <div class="board-box">
+        <div id="board" class="board"></div>
+        <dialog id="promotion" class="promotion" aria-label="Promote to">
+          <div class="cg-wrap promo-pieces">
+            <button type="button" data-piece="q" aria-label="Queen"><piece class="queen"></piece></button>
+            <button type="button" data-piece="r" aria-label="Rook"><piece class="rook"></piece></button>
+            <button type="button" data-piece="b" aria-label="Bishop"><piece class="bishop"></piece></button>
+            <button type="button" data-piece="n" aria-label="Knight"><piece class="knight"></piece></button>
+          </div>
+        </dialog>
+      </div>
+      <div class="player" id="bottom-player"><span class="name"></span><span class="taken"></span></div>
+    </section>
+
+    <aside class="panel">
+      <p id="status" class="status" role="status" aria-live="polite">Loading the engine…</p>
+
+      <div class="nav" role="group" aria-label="Look through the game">
+        <!-- Drawn as icons: the ⏮ ⏭ characters turn into emoji on iPhones -->
+        <button type="button" id="first" aria-label="First move" title="First move (Home)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+        <button type="button" id="prev" aria-label="Previous move" title="Previous move (←)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5v14L6 12z"/></svg></button>
+        <button type="button" id="next" aria-label="Next move" title="Next move (→)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14l11-7z"/></svg></button>
+        <button type="button" id="last" aria-label="Latest move" title="Latest move (End)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+      </div>
+
+      <ol id="moves" class="moves" aria-label="Moves"></ol>
+
+      <div class="actions">
+        <button type="button" id="new-game" class="primary">New game</button>
+        <button type="button" id="undo">Take back</button>
+        <button type="button" id="flip">Flip board</button>
+        <button type="button" id="resign">Resign</button>
+        <button type="button" id="download">Download PGN</button>
+      </div>
+
+      <p class="hint">Right-click and drag to draw an arrow, right-click a square to circle it. Hold Shift, Ctrl or Alt for other colours. Click the board to clear them.</p>
+    </aside>
+  </main>
+
+  <dialog id="new-dialog" class="box">
+    <form method="dialog">
+      <h2>New game</h2>
+      <fieldset class="sides">
+        <legend>Play as</legend>
+        <label><input type="radio" name="side" value="w" checked> White</label>
+        <label><input type="radio" name="side" value="b"> Black</label>
+        <label><input type="radio" name="side" value="random"> Random</label>
+      </fieldset>
+      <label class="level">Stockfish level <output id="level-name"></output>
+        <input type="range" id="level" name="level" min="1" max="10" step="1" value="3">
+      </label>
+      <div class="row">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" value="start" class="primary">Start</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="confirm" class="box">
+    <form method="dialog">
+      <p id="confirm-text"></p>
+      <div class="row">
+        <button type="submit" value="no">Cancel</button>
+        <button type="submit" value="yes" class="primary" id="confirm-yes">Yes</button>
+      </div>
+    </form>
+  </dialog>
+
+  <footer class="foot">
+    Stockfish runs in your browser, so nothing you play leaves this device.
+    <a href="https://github.com/NathanMcCoy/chess">Source</a> (GPL-3.0)
+  </footer>
+
+  <script type="module" src="js/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,173 @@
+/* pacificfish chess: deep-sea colours, the board in cool blue-greys, sandy highlights */
+:root {
+  --bg: #0b1f2b;
+  --panel: #12303f;
+  --panel-2: #183c4e;
+  --line: #24536a;
+  --text: #e8f1f4;
+  --muted: #9db7c2;
+  --accent: #f2c46d;
+  --accent-text: #1b1405;
+  --light-sq: #dfe7ea;
+  --dark-sq: #7f9fb0;
+  --highlight: rgba(242, 196, 109, 0.55);
+  --dest: rgba(16, 58, 79, 0.45);
+  --danger: #e06c5a;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html, body { margin: 0; }
+body {
+  background: var(--bg);
+  color: var(--text);
+  font: 16px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  min-height: 100vh;
+  display: flex;
+  flex-direction: column;
+}
+button { font: inherit; color: inherit; }
+
+.top { padding: 12px 16px; }
+.brand { color: var(--text); text-decoration: none; font-weight: 800; font-size: 1.25rem; letter-spacing: -0.01em; }
+.brand span { color: var(--accent); font-weight: 600; }
+
+.layout {
+  flex: 1;
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(260px, 340px);
+  gap: 20px;
+  justify-content: center;
+  align-items: start;
+  padding: 0 16px 16px;
+}
+.play { display: flex; flex-direction: column; gap: 6px; }
+.board-box { position: relative; }
+/* The board is square and as big as fits: the screen's width on phones, its height on computers */
+.board { width: min(calc(100vw - 32px), calc(100vh - 170px), 720px); aspect-ratio: 1; }
+.board.cg-wrap { width: min(calc(100vw - 32px), calc(100vh - 170px), 720px); height: auto; }
+
+.player { display: flex; justify-content: space-between; align-items: center; min-height: 28px; color: var(--muted); font-size: 0.95rem; }
+.player .name { color: var(--text); font-weight: 600; }
+.player .taken { letter-spacing: 1px; font-size: 1.1rem; }
+
+/* The board's look: our own squares and highlights over chessground's layout */
+cg-board {
+  background-color: var(--light-sq);
+  background-image: repeating-conic-gradient(var(--dark-sq) 0 25%, var(--light-sq) 0 50%);
+  background-size: 25% 25%;
+  border-radius: 4px;
+}
+cg-board square.last-move { background-color: var(--highlight); }
+cg-board square.selected { background-color: rgba(242, 196, 109, 0.75); }
+cg-board square.move-dest { background: radial-gradient(var(--dest) 19%, transparent 21%); }
+cg-board square.oc.move-dest { background: radial-gradient(transparent 0 78%, var(--dest) 80%); }
+cg-board square.move-dest:hover { background: rgba(16, 58, 79, 0.28); }
+cg-board square.check { background: radial-gradient(ellipse at center, rgba(224, 60, 40, 1) 0%, rgba(224, 60, 40, 0.8) 30%, rgba(224, 60, 40, 0) 80%); }
+/* Coordinates inside the edge squares: ranks top-left of the left column, files bottom-right of
+   the bottom row. (chessground's own placement sits partly outside the board.) */
+.cg-wrap coords { font-size: 11px; font-weight: 700; opacity: 1; font-family: inherit; }
+.cg-wrap coords.ranks { left: 3px; top: 0; height: 100%; width: auto; }
+.cg-wrap coords.ranks coord { transform: none; flex: 1 1 0; padding-top: 2px; }
+.cg-wrap coords.files { left: 0; bottom: 1px; width: 100%; height: auto; }
+.cg-wrap coords.files coord { flex: 1 1 0; text-align: right; padding-right: 3px; }
+/* Each label in the colour of the other kind of square, so it shows: a1 is dark, so "1" and "a"
+   are light when White is at the bottom, and the pattern flips when the board is turned round */
+.orientation-white .ranks :nth-child(odd), .orientation-white .files :nth-child(odd),
+.orientation-black .ranks :nth-child(even), .orientation-black .files :nth-child(even) { color: var(--light-sq); }
+.orientation-white .ranks :nth-child(even), .orientation-white .files :nth-child(even),
+.orientation-black .ranks :nth-child(odd), .orientation-black .files :nth-child(odd) { color: var(--dark-sq); }
+
+/* Choosing a promotion piece: four pieces over the board */
+.promotion { padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
+.promotion::backdrop { background: rgba(0, 0, 0, 0.45); }
+.promo-pieces { display: flex; gap: 6px; }
+.promo-pieces button {
+  width: 72px; height: 72px; padding: 0; border: 0; border-radius: 8px;
+  background: var(--light-sq); position: relative; cursor: pointer;
+}
+.promo-pieces button:hover, .promo-pieces button:focus-visible { background: var(--accent); outline: none; }
+.promo-pieces piece { width: 100%; height: 100%; }
+
+/* The side panel */
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-height: calc(100vh - 90px);
+}
+.status { margin: 0; font-weight: 600; min-height: 2.9em; }
+.status.over { color: var(--accent); }
+.nav { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
+.nav svg { width: 18px; height: 18px; fill: currentColor; display: block; margin: 0 auto; }
+.nav button, .actions button, .box button {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  cursor: pointer;
+}
+.nav button:hover:not(:disabled), .actions button:hover:not(:disabled), .box button:hover { border-color: var(--muted); }
+button:disabled { opacity: 0.45; cursor: default; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+
+.moves {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  min-height: 120px;
+  flex: 1;
+  overflow-y: auto;
+  background: var(--bg);
+  border-radius: 8px;
+  display: grid;
+  grid-template-columns: 2.6em 1fr 1fr;
+  align-content: start;
+  font-variant-numeric: tabular-nums;
+}
+.moves li { display: contents; }
+.moves .no { color: var(--muted); padding: 3px 4px; text-align: right; }
+.moves button {
+  background: none; border: 0; border-radius: 5px; padding: 3px 6px; text-align: left; cursor: pointer; font-weight: 600;
+}
+.moves button:hover { background: var(--panel-2); }
+.moves button.current { background: var(--accent); color: var(--accent-text); }
+.moves .result { grid-column: 1 / -1; text-align: center; color: var(--accent); font-weight: 700; padding: 6px; }
+
+.actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.actions #new-game { grid-column: 1 / -1; }
+.hint { margin: 0; color: var(--muted); font-size: 0.85rem; }
+
+/* Dialogs */
+.box {
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  background: var(--panel);
+  color: var(--text);
+  padding: 18px;
+  width: min(380px, calc(100vw - 32px));
+}
+.box::backdrop { background: rgba(0, 0, 0, 0.55); }
+.box h2 { margin: 0 0 12px; font-size: 1.2rem; }
+.box p { margin: 0 0 14px; }
+.sides { border: 0; padding: 0; margin: 0 0 14px; display: flex; gap: 14px; flex-wrap: wrap; }
+.sides legend { color: var(--muted); margin-bottom: 6px; padding: 0; }
+.level { display: block; color: var(--muted); margin-bottom: 16px; }
+.level output { color: var(--text); font-weight: 600; margin-left: 4px; }
+.level input { width: 100%; margin-top: 8px; accent-color: var(--accent); }
+.row { display: flex; justify-content: flex-end; gap: 8px; }
+
+.foot { color: var(--muted); font-size: 0.85rem; text-align: center; padding: 12px 16px 20px; }
+.foot a { color: var(--accent); }
+
+/* Phones and narrow windows: board on top, panel under it */
+@media (max-width: 760px) {
+  .layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .board, .board.cg-wrap { width: calc(100vw - 32px); }
+  .panel { max-height: none; }
+  .moves { max-height: 180px; }
+}
