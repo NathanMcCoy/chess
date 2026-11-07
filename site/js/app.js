@@ -5,7 +5,7 @@ import { Chessground } from '../vendor/chessground.js';
 import { Engine, LEVELS } from './engine.js';
 import { RATING, RATINGS, rate, accuracy, whiteChance, evalText } from './review.js';
 import { initAccounts } from './account.js';
-import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby } from './online.js';
+import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath } from './online.js';
 
 const $ = id => document.getElementById(id);
 const SAVE = 'chess.game.v1';
@@ -652,6 +652,8 @@ async function openOnline(id, { join = false } = {}) {
   } catch (e) {
     return backToStockfish(false, e.status === 404 ? 'That game link doesn’t work: there’s no such game.' : `Couldn’t open that game: ${e.message}`);
   }
+  // Hexagonal chess is played on its own page
+  if (v.variant !== 'chess') return location.replace(gamePath(id, v.variant) + (join ? '&join=1' : ''));
   if (!v.you && v.status === 'waiting') {
     const side = v.players.w.joined ? 'b' : 'w';
     const yours = timeText(v.times[side]), theirs = timeText(v.times[otherSide(side)]);
@@ -808,15 +810,17 @@ function renderClocks() {
   }
 }
 
-$('live-games').onclick = () => openLobby((id, how) => {
+$('live-games').onclick = () => openLobby((id, how, variant) => {
+  if (variant !== 'chess') return location.assign(gamePath(id, variant) + (how === 'play' ? '&join=1' : ''));
   history.pushState(null, '', `?g=${id}`);
   openOnline(id, { join: how === 'play' });
 });
 $('play-friend').onclick = async () => {
-  const settings = await askForGame();
+  const settings = await askForGame('chess');
   if (!settings) return;
   try {
     const r = await createGame(settings);
+    if (settings.variant !== 'chess') return location.assign(gamePath(r.id, settings.variant));
     history.pushState(null, '', `?g=${r.id}`);
     await openOnline(r.id);
   } catch (e) {
@@ -885,9 +889,20 @@ function openNewGame() {
   const showLevel = () => { $('level-name').textContent = `${slider.value}: ${LEVELS[slider.value - 1].name}`; };
   showLevel();
   slider.oninput = showLevel;
+  // Hexagonal chess: no Stockfish, so no side or level to choose; it's played on its own page
+  const variants = box.querySelectorAll('input[name=variant]');
+  const pickVariant = () => {
+    const hex = box.querySelector('input[name=variant]:checked').value === 'hex';
+    $('nd-stockfish').hidden = hex;
+    $('nd-hex').hidden = !hex;
+  };
+  box.querySelector('input[name=variant][value="chess"]').checked = true;
+  for (const r of variants) r.onchange = pickVariant;
+  pickVariant();
   box.returnValue = '';
   box.addEventListener('close', () => {
     if (box.returnValue !== 'start') return;
+    if (box.querySelector('input[name=variant]:checked').value === 'hex') return location.assign('/hex?new=1');
     let side = box.querySelector('input[name=side]:checked').value;
     if (side === 'random') side = Math.random() < 0.5 ? 'w' : 'b';
     newGame(side, Number(slider.value));

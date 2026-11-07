@@ -383,7 +383,7 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     await playOpening(other, 'd2d4 d7d5', touch);
     await other.locator('#acc-go').click();
     await other.waitForFunction(() => document.querySelector('#acc-error').textContent.length > 0);
-    check(who, /don’t match/.test(await accText(other, '#acc-error')), 'a wrong opening doesn’t sign in', await accText(other, '#acc-error'));
+    check(who, /don’t match/.test(await accText(other, '#acc-error')), 'a wrong opening doesn’t sign in', `${await accText(other, '#acc-error')} (the box shows: ${await accText(other, '#acc-moves')})`);
     await other.locator('#acc-clear').click();
     await playOpening(other, ITALIAN, touch);
     await other.locator('#acc-go').click();
@@ -617,7 +617,7 @@ async function hexSeed(page, start, extra = {}) {
   await page.locator('.hex-pieces piece').first().waitFor();
 }
 
-async function hexFlow(page, who, { touch, mouse }) {
+async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await page.goto('/');
   check(who, (await page.locator('a[href="/hex"]').count()) === 1, 'the chess page links to hexagonal chess');
   await page.goto('/hex');
@@ -719,6 +719,107 @@ async function hexFlow(page, who, { touch, mouse }) {
   await page.locator('#confirm[open]').waitFor();
   await page.locator('#confirm button[value="no"]').click();
   check(who, (await hexMoves(page)).length === 1, 'and Cancel keeps the game going');
+
+  // The chess page's New game, with hexagonal chess chosen: no Stockfish settings, and a fresh hex game
+  const np = await freshPage();
+  await np.goto('/');
+  await np.locator('#board cg-board piece').first().waitFor();
+  await np.locator('#new-game').click();
+  const nd = np.locator('#new-dialog[open]');
+  await nd.waitFor();
+  await nd.locator('input[name=variant][value=hex]').check();
+  check(who, await nd.locator('#nd-stockfish').isHidden() && await nd.locator('#nd-hex').isVisible(), 'choosing hexagonal chess in New game hides the Stockfish settings');
+  await nd.getByRole('button', { name: 'Start' }).click();
+  await np.waitForURL(/\/hex$/);
+  await np.locator('.hex-pieces piece').first().waitFor();
+  check(who, (await np.locator('.hex-pieces piece').count()) === 36 && (await status(np)) === 'White to move.', 'and Start opens a new hex game');
+  await np.close();
+
+  // Against a person: made from the chess page's Play a friend, joined by its link, watched from Live
+  // games, resigned. Not on the live site, where it would leave real games behind.
+  if (remote) return check(who, true, 'hex against a person skipped on the live site');
+  const host = await freshPage();
+  await host.goto('/');
+  await host.locator('#board cg-board piece').first().waitFor();
+  await host.locator('#play-friend').click();
+  const fd = host.locator('#friend-dialog[open]');
+  await fd.waitFor();
+  check(who, await fd.locator('input[name=fr-variant][value=chess]').isChecked(), 'on the chess page, Play a friend starts on chess');
+  await fd.locator('input[name=fr-variant][value=hex]').check();
+  await fd.locator('[data-preset="5+3"]').click();
+  await fd.locator('input[name=fr-side][value=w]').check();
+  await fd.locator('#fr-listed').check();
+  await fd.getByRole('button', { name: 'Make the link' }).click();
+  await host.waitForURL(/\/hex\?g=/);
+  await host.locator('#ob-link-row:not([hidden])').waitFor();
+  const link = await host.locator('#ob-link').inputValue();
+  const id = new URL(link).searchParams.get('g');
+  const clocks = async p => [await p.locator('#bottom-player .clock').innerText(), await p.locator('#top-player .clock').innerText()];
+  check(who, /\/hex\?g=[\w-]{12}$/.test(link) && /^Waiting for an opponent/.test(await status(host)), 'choosing hexagonal chess makes a hex game, on the hex page', link);
+  check(who, JSON.stringify(await clocks(host)) === '["5:00","5:00"]', 'with both clocks', JSON.stringify(await clocks(host)));
+
+  // Live games, on the hex page, lists it as hexagonal chess
+  const viewer = await freshPage();
+  await viewer.goto('/hex');
+  await viewer.locator('.hex-pieces piece').first().waitFor();
+  await viewer.locator('#live-games').click();
+  const open = viewer.locator(`#lobby[open] #lobby-open li[data-id="${id}"]`);
+  await open.waitFor();
+  check(who, (await open.innerText()).replace(/\s+/g, ' ').trim() === 'Guest Hexagonal · You’d play Black · 5+3 each Play', 'Live games says it’s hexagonal chess', (await open.innerText()).replace(/\s+/g, ' '));
+  await viewer.locator('#lobby-close').click();
+
+  // The link as the chess page would give it: it goes to the hex page, with the invitation
+  const guest = await freshPage();
+  await guest.goto(`/?g=${id}`);
+  const invite = guest.locator('#confirm[open]');
+  await invite.waitFor();
+  check(who, new URL(guest.url()).pathname === '/hex' && /play Black in hexagonal chess \(5\+3 each\)/.test(await invite.locator('#confirm-text').innerText()),
+    'a hex link opened on the chess page goes to the hex page, and invites', `${guest.url()} ${await invite.locator('#confirm-text').innerText()}`);
+  await invite.getByRole('button', { name: 'Play' }).click();
+  await guest.waitForFunction(() => document.querySelector('#status').textContent === 'Your opponent’s move.');
+  const [g5, g7] = [await hexCell(guest, 'f5'), await hexCell(guest, 'f7')];
+  check(who, g7.y > g5.y && (await guest.locator('#bottom-player .name').innerText()) === 'You', 'the guest plays Black, with Black at the bottom');
+  await host.waitForFunction(() => document.querySelector('#status').textContent === 'Your move.');
+
+  // Moves cross over, live, and only on your own turn
+  await hexMove(host, 'f5', 'f6', touch);
+  await guest.waitForFunction(() => document.querySelectorAll('#moves button').length === 1);
+  check(who, JSON.stringify(await hexMoves(guest)) === '["f6"]' && (await status(guest)) === 'Your move.', 'the move reaches the other player');
+  check(who, await guest.locator('#bottom-player .clock.running').count() === 1, 'and their clock is the one running');
+  await hexTap(host, 'e4', touch);
+  check(who, (await host.locator('[data-dest]').count()) === 0, 'nobody can move on the other’s turn');
+  await hexMove(guest, 'e7', 'e6', touch);
+  await host.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
+  check(who, (await status(host)) === 'Your move.', 'and back');
+
+  // Watched from Live games on the chess page: it opens on the hex page
+  await viewer.goto('/');
+  await viewer.locator('#live-games').click();
+  const live = viewer.locator(`#lobby[open] #lobby-live li[data-id="${id}"]`);
+  await live.waitFor();
+  check(who, /^Guest vs Guest Hexagonal · 5\+3 each · 2 moves, White to move Watch$/.test((await live.innerText()).replace(/\s+/g, ' ').trim()), 'it’s listed as being played', (await live.innerText()).replace(/\s+/g, ' '));
+  await live.getByRole('button', { name: 'Watch' }).click();
+  await viewer.waitForURL(/\/hex\?g=/);
+  await viewer.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
+  check(who, (await status(viewer)) === 'White to move.' && await viewer.locator('#ob-resign').isHidden(), 'and can be watched, with nothing to play');
+
+  // Black resigns: everyone sees it
+  await guest.locator('#ob-resign').click();
+  await guest.locator('#confirm[open]').waitFor();
+  await guest.locator('#confirm-yes').click();
+  for (const p of [host, guest, viewer]) await p.locator('#gameover:not([hidden])').waitFor();
+  const card = async p => `${await p.locator('#go-title').innerText()} | ${await p.locator('#go-reason').innerText()} | ${await p.locator('#go-score').innerText()}`;
+  check(who, (await card(host)) === 'You win! | Your opponent resigned. | 1–0', 'the winner is told', await card(host));
+  check(who, (await card(guest)) === 'Your opponent wins | You resigned. | 1–0', 'so is the one who resigned', await card(guest));
+  check(who, (await card(viewer)) === 'White wins | Black resigned. | 1–0', 'and the watcher', await card(viewer));
+
+  // Back to your own game here
+  await host.locator('#go-close').click();
+  await host.locator('#ob-leave').click();
+  await host.locator('#online-box').waitFor({ state: 'hidden' });
+  check(who, new URL(host.url()).pathname === '/hex' && !new URL(host.url()).search && (await hexMoves(host)).length === 0 && await host.locator('#bottom-player .clock').isHidden(),
+    'leaving goes back to your own game on this device', host.url());
+  for (const p of [host, guest, viewer]) await p.close();
 }
 
 // A page with its errors collected: anything the security policy blocks is a failure, as the live
@@ -752,7 +853,7 @@ async function onDevice(name) {
   const freshPage = async () => (await browser.newContext({ ...device, baseURL: BASE })).newPage();
   await Promise.all([
     run(name, (page, who) => flow(page, who, { touch: !!device.hasTouch, mouse, freshPage }), { acceptDownloads: true }),
-    run(`${name} hex`, (page, who) => hexFlow(page, who, { touch: !!device.hasTouch, mouse })),
+    run(`${name} hex`, (page, who) => hexFlow(page, who, { touch: !!device.hasTouch, mouse, freshPage })),
   ]);
   await browser.close();
 }

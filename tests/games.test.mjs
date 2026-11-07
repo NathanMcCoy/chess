@@ -233,3 +233,19 @@ test('a joined listed game moves from open to being played, and leaves when it e
   assert.deepEqual(games.lobby().live, [], 'nor once it’s over');
   assert.ok(j);
 });
+
+test('a hexagonal chess game: its own start, its own rules, and Live games says which it is', () => {
+  const { games } = setup();
+  const made = games.create({ variant: 'hex', color: 'w', times: TEN_FIVE, listed: true });
+  const v = games.get(made.id, made.seat);
+  assert.equal(v.variant, 'hex');
+  assert.match(v.start, /^6\/P5p\//, 'Gliński’s starting position');
+  assert.equal(games.lobby().open[0].variant, 'hex');
+  const b = games.join(made.id, null).seat;
+  assert.throws(() => games.move(made.id, made.seat, null, 'e2e4'), err(400, /legal/), 'a square-chess move isn’t a hex move');
+  games.move(made.id, made.seat, null, 'f5f6');
+  const after = games.move(made.id, b, null, 'e7e6');
+  assert.deepEqual(after.moves, ['f5f6', 'e7e6']);
+  assert.equal(after.turn, 'w');
+  assert.equal(games.lobby().live[0].variant, 'hex');
+});
