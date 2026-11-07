@@ -19,6 +19,7 @@
     <section class="play">
       <div class="player" id="top-player"><span class="name"></span><span class="taken"></span></div>
       <div class="board-box">
+        <div id="evalbar" class="evalbar" hidden aria-label="Evaluation"><div class="fill"></div><span class="score"></span></div>
         <div id="board" class="board"></div>
         <div id="gameover" class="gameover" hidden>
           <div class="go-card" role="dialog" aria-labelledby="go-title" aria-describedby="go-reason">
@@ -26,7 +27,8 @@
             <h2 id="go-title"></h2>
             <p class="go-reason" id="go-reason"></p>
             <div class="go-buttons">
-              <button type="button" id="go-rematch" class="primary">Rematch</button>
+              <button type="button" id="go-review" class="primary">Review this game</button>
+              <button type="button" id="go-rematch">Rematch</button>
               <button type="button" id="go-new">New game…</button>
               <button type="button" id="go-close">View the board</button>
             </div>
@@ -55,9 +57,22 @@
         <button type="button" id="last" aria-label="Latest move" title="Latest move (End)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
       </div>
 
+      <section id="review" class="review" hidden aria-label="Game review">
+        <div class="rv-head">
+          <h2>Game review</h2>
+          <button type="button" id="rv-exit">Done</button>
+        </div>
+        <p id="rv-progress" class="rv-progress" hidden><span></span><progress max="1" value="0"></progress></p>
+        <p id="rv-verdict" class="rv-verdict"></p>
+        <svg id="rv-graph" class="rv-graph" viewBox="0 0 100 32" preserveAspectRatio="none" role="img" aria-label="White's winning chances through the game"></svg>
+      </section>
+
       <ol id="moves" class="moves" aria-label="Moves"></ol>
 
+      <table id="rv-summary" class="rv-summary" hidden></table>
+
       <div class="actions">
+        <button type="button" id="review-game">Review game</button>
         <button type="button" id="new-game" class="primary">New game</button>
         <button type="button" id="undo">Take back</button>
         <button type="button" id="flip">Flip board</button>

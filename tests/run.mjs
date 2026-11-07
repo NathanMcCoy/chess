@@ -210,6 +210,46 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   check(who, takenText === '+5 / ', 'you’re +5 and the promoted pawn isn’t counted as captured', JSON.stringify(takenText));
   await screenshot(page, `${SHOTS}${who}.png`);
 
+  // The game review, on Fool's Mate (you as White, and losing): 1. f3 e5 2. g4?? Qh4#
+  const rv = await freshPage();
+  await rv.goto('/');
+  await rv.evaluate(s => localStorage.setItem('chess.game.v1', JSON.stringify(s)), { pgn: '1. f3 e5 2. g4 Qh4# 0-1', player: 'w', level: 3, orientation: 'white', result: { score: '0-1', winner: 'b', reason: 'checkmate', text: 'Checkmate. Stockfish wins.' } });
+  await rv.reload();
+  await rv.locator('#gameover:not([hidden])').getByRole('button', { name: 'Review this game' }).click();
+  check(who, await rv.locator('#review').isVisible() && await rv.locator('#evalbar').isVisible() && await rv.locator('.actions').isHidden(),
+    'Review this game opens the review, with the evaluation bar');
+  await rv.locator('#rv-progress').waitFor({ state: 'hidden', timeout: 30000 });
+  const ratings = await rv.locator('#moves button').evaluateAll(bs => bs.map(b => `${b.textContent}:${b.dataset.rating}${b.dataset.symbol || ''}`));
+  check(who, ratings.length === 4 && ratings.every(r => !r.endsWith(':undefined')), 'every move gets a rating', ratings.join(' '));
+  check(who, ratings[2] === 'g4:blunder??' && ratings[3] === 'Qh4#:best', 'g4 is a blunder and Qh4# the best move', ratings.join(' '));
+  await rv.locator('#moves button[data-ply="3"]').click();
+  const verdict = await rv.locator('#rv-verdict').innerText();
+  check(who, /^Your g4\?\? was a blunder\.\s*Best was \S+\. Evaluation .*M1\.$/.test(verdict), 'it says what g4 was, what was best and that it allows mate', JSON.stringify(verdict));
+  // Drawn on the next screen refresh, like the check highlight. "attached", not "visible": a straight
+  // up-the-board arrow like e2-e4 has a bounding box 0 px wide, which never counts as visible.
+  const arrow = await rv.locator('svg.cg-shapes line').first().waitFor({ state: 'attached', timeout: 2000 }).then(() => true, () => false);
+  const vertical = arrow && await rv.locator('svg.cg-shapes line').first().evaluate(l => l.getAttribute('x1') === l.getAttribute('x2'));
+  check(who, arrow && vertical, 'and draws an arrow for the best move (e2-e4, straight up the board)');
+  await rv.locator('#last').click();
+  const last = (await rv.locator('#rv-verdict').innerText()).replace(/\s+/g, ' ');
+  check(who, last === 'Stockfish’s Qh4# was the best move. Checkmate.', 'Qh4# is described as Stockfish’s best move, and checkmate', JSON.stringify(last));
+  const fill = await rv.locator('#evalbar .fill').evaluate(f => f.style.height);
+  check(who, fill === '0%', 'with White mated, the bar is all Black', fill);
+  const summary = await rv.locator('#rv-summary').innerText();
+  check(who, /You \(white\)\s+Stockfish \(black\)/.test(summary) && /Blunder\s+1\s+0/.test(summary) && /Accuracy\s+[\d.]+\s+[\d.]+/.test(summary), 'the summary shows accuracy and counts for each side', JSON.stringify(summary.replace(/\s+/g, ' ')));
+  check(who, await rv.locator('#rv-graph polygon').count() === 1 && await rv.locator('#rv-graph .mark[data-rating="blunder"]').count() === 1, 'the graph draws the game with the blunder marked');
+  const wide = await rv.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+  check(who, wide <= 0, 'the bar fits beside the board without widening the page', `${wide}px over`);
+  await screenshot(rv, `${SHOTS}${who}-review.png`);
+  // Saved: a reload keeps the analysis, so reviewing again is instant
+  await rv.reload();
+  await rv.locator('#gameover:not([hidden])').getByRole('button', { name: 'View the board' }).click();
+  await rv.locator('#review-game').click();
+  check(who, await rv.locator('#rv-progress').isHidden() && (await rv.locator('#moves button[data-rating]').count()) === 4, 'a reload keeps the analysis');
+  await rv.locator('#rv-exit').click();
+  check(who, await rv.locator('#review').isHidden() && await rv.locator('#evalbar').isHidden() && await rv.locator('.actions').isVisible(), 'Done leaves the review');
+  await rv.close();
+
   // When Stockfish can't work, say so instead of "thinking" forever. Each case in a fresh browser.
   // Its loader missing: the worker reports an error straight away.
   const noLoader = await freshPage();

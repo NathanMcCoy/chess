@@ -13,8 +13,17 @@
   --highlight: rgba(242, 196, 109, 0.55);
   --dest: rgba(16, 58, 79, 0.45);
   --danger: #e06c5a;
+  /* Move ratings in the review, best to worst */
+  --r-best: #7fd18b;
+  --r-excellent: #5fc2b0;
+  --r-good: #9db7c2;
+  --r-inaccuracy: #f2c46d;
+  --r-mistake: #f0965a;
+  --r-blunder: #e8604f;
+  --bar: 0px;              /* room for the evaluation bar beside the board while reviewing */
   color-scheme: dark;
 }
+body.reviewing { --bar: 22px; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
@@ -42,10 +51,26 @@ button { font: inherit; color: inherit; }
   padding: 0 16px 16px;
 }
 .play { display: flex; flex-direction: column; gap: 6px; }
-.board-box { position: relative; }
-/* The board is square and as big as fits: the screen's width on phones, its height on computers */
-.board { width: min(calc(100vw - 32px), calc(100vh - 170px), 720px); aspect-ratio: 1; }
-.board.cg-wrap { width: min(calc(100vw - 32px), calc(100vh - 170px), 720px); height: auto; }
+.board-box { position: relative; display: flex; gap: 6px; }
+/* The board is square and as big as fits: the screen's width on phones, its height on computers,
+   less the evaluation bar's room while reviewing */
+.board, .board.cg-wrap { width: calc(min(calc(100vw - 32px), calc(100vh - 170px), 720px) - var(--bar)); aspect-ratio: 1; height: auto; }
+
+/* The evaluation bar: White's share from the bottom (from the top when the board is turned round) */
+.evalbar {
+  position: relative; width: 16px; flex: none; border-radius: 4px; overflow: hidden;
+  background: #1d2a31; display: flex; flex-direction: column-reverse;
+}
+.evalbar[hidden] { display: none; }
+.evalbar.flipped { flex-direction: column; }
+.evalbar .fill { background: #eef3f5; height: 50%; transition: height 0.3s ease; }
+.evalbar .score {
+  position: absolute; left: 0; right: 0; bottom: 4px; text-align: center;
+  font-size: 8px; font-weight: 800; color: #1d2a31; writing-mode: horizontal-tb;
+}
+.evalbar.black-ahead .score { bottom: auto; top: 4px; color: #eef3f5; }
+.evalbar.flipped .score { bottom: auto; top: 4px; }
+.evalbar.flipped.black-ahead .score { top: auto; bottom: 4px; }
 
 .player { display: flex; justify-content: space-between; align-items: center; min-height: 28px; color: var(--muted); font-size: 0.95rem; }
 .player .name { color: var(--text); font-weight: 600; }
@@ -173,7 +198,48 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .moves li.result { display: block; grid-column: 1 / -1; text-align: center; color: var(--accent); font-weight: 700; padding: 6px; }
 
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.actions #new-game { grid-column: 1 / -1; }
+.actions #new-game, .actions #review-game { grid-column: 1 / -1; }
+.actions #review-game[hidden] { display: none; }
+body.reviewing .actions, body.reviewing .hint { display: none; }
+
+/* Ratings in the move list: a coloured dot, and ?!, ? or ?? on the poor ones */
+.moves button[data-rating]::before {
+  content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
+  margin-right: 5px; vertical-align: 1px; background: var(--rc);
+}
+.moves button[data-symbol]::after { content: attr(data-symbol); color: var(--rc); margin-left: 2px; font-weight: 800; }
+[data-rating="best"] { --rc: var(--r-best); }
+[data-rating="excellent"] { --rc: var(--r-excellent); }
+[data-rating="good"] { --rc: var(--r-good); }
+[data-rating="inaccuracy"] { --rc: var(--r-inaccuracy); }
+[data-rating="mistake"] { --rc: var(--r-mistake); }
+[data-rating="blunder"] { --rc: var(--r-blunder); }
+
+/* The review panel */
+.review { display: flex; flex-direction: column; gap: 8px; }
+.review[hidden] { display: none; }
+.rv-head { display: flex; justify-content: space-between; align-items: center; }
+.rv-head h2 { margin: 0; font-size: 1.05rem; }
+.rv-head button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 5px 12px; cursor: pointer; }
+.rv-progress { margin: 0; color: var(--muted); font-size: 0.9rem; display: grid; gap: 4px; }
+.rv-progress[hidden] { display: none; }
+.rv-progress progress { width: 100%; height: 6px; accent-color: var(--accent); }
+.rv-verdict { margin: 0; min-height: 2.9em; }
+.rv-verdict b { color: var(--rc, var(--text)); }
+.rv-verdict .best { color: var(--muted); display: block; font-size: 0.9rem; }
+.rv-graph { width: 100%; height: 64px; background: var(--bg); border-radius: 8px; cursor: pointer; display: block; }
+.rv-graph .area { fill: #dfe7ea; }
+.rv-graph .mid { stroke: var(--line); stroke-width: 0.3; }
+.rv-graph .now { stroke: var(--accent); stroke-width: 0.6; }
+.rv-graph .mark { stroke: var(--rc); stroke-width: 0.8; }
+.rv-summary { width: 100%; border-collapse: collapse; font-size: 0.9rem; }
+.rv-summary[hidden] { display: none; }
+.rv-summary th, .rv-summary td { padding: 3px 6px; text-align: center; }
+.rv-summary th:first-child, .rv-summary td:first-child { text-align: left; }
+.rv-summary thead th { color: var(--muted); font-weight: 600; }
+.rv-summary .acc td { font-size: 1.25rem; font-weight: 800; color: var(--text); padding-bottom: 6px; }
+.rv-summary td[data-rating] { color: var(--rc); font-weight: 700; }
+.rv-summary td.label::before { content: ""; display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--rc); margin-right: 6px; }
 .hint { margin: 0; color: var(--muted); font-size: 0.85rem; }
 
 /* Dialogs */
@@ -201,7 +267,7 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 /* Phones and narrow windows: board on top, panel under it */
 @media (max-width: 760px) {
   .layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
-  .board, .board.cg-wrap { width: calc(100vw - 32px); }
+  .board, .board.cg-wrap { width: calc(100vw - 32px - var(--bar)); }
   .panel { max-height: none; }
   .moves { max-height: 180px; }
 }
