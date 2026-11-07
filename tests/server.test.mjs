@@ -70,6 +70,15 @@ test('only GET and HEAD', async () => {
   assert.equal(r.headers.allow, 'GET, HEAD');
 });
 
+test('doubled slashes still find the page (as nginx did)', async () => {
+  // A path starting with // means "another host" to the URL parser, which made these 400s
+  assert.equal((await raw('//')).status, 200);
+  const js = await raw('//js/app.js');
+  assert.equal(js.status, 200);
+  assert.match(js.headers['content-type'], /^text\/javascript/);
+  assert.equal((await raw('/js//app.js?x=1#y')).status, 200, 'and inside the path, with a query');
+});
+
 test('a broken URL is a 400, not a crash', async () => {
   const r = await raw('/%E0%A4%A');
   assert.equal(r.status, 400);
