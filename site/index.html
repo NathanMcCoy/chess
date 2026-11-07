@@ -13,7 +13,35 @@
 <body>
   <header class="top">
     <a class="brand" href="https://pacificfish.ca/">pacificfish <span>chess</span></a>
+    <div class="account-bar">
+      <button type="button" id="acc-open" hidden>Sign in</button>
+      <span id="acc-who" class="acc-who" hidden></span>
+      <button type="button" id="acc-out" hidden>Sign out</button>
+    </div>
   </header>
+
+  <dialog id="account" class="box account" aria-labelledby="acc-title">
+    <h2 id="acc-title" class="visually-hidden">Your account</h2>
+    <div class="acc-tabs" role="tablist">
+      <button type="button" role="tab" data-tab="signin" aria-selected="true">Sign in</button>
+      <button type="button" role="tab" data-tab="signup" aria-selected="false">Create account</button>
+    </div>
+    <label class="acc-field">Name <input id="acc-name" maxlength="20" autocomplete="username" spellcheck="false" autocapitalize="off"></label>
+    <p id="acc-step" class="acc-step"></p>
+    <div id="acc-board" class="acc-board"></div>
+    <p id="acc-moves" class="acc-moves">&nbsp;</p>
+    <div class="acc-pad">
+      <button type="button" id="acc-undo">Undo move</button>
+      <button type="button" id="acc-clear">Start over</button>
+      <button type="button" id="acc-again" hidden>Choose a different opening</button>
+    </div>
+    <div id="acc-meter" class="meter" hidden data-level="none"><div class="bar"><span></span></div><p></p></div>
+    <p id="acc-error" class="acc-error" role="alert"></p>
+    <div class="row">
+      <button type="button" id="acc-cancel">Cancel</button>
+      <button type="button" id="acc-go" class="primary">Sign in</button>
+    </div>
+  </dialog>
 
   <main class="layout">
     <section class="play">

@@ -37,7 +37,38 @@ body {
 }
 button { font: inherit; color: inherit; }
 
-.top { padding: 12px 16px; }
+.top { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.account-bar { display: flex; align-items: center; gap: 8px; }
+.account-bar button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
+.account-bar button[hidden] { display: none; }
+.acc-who { font-weight: 700; color: var(--accent); }
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* The account box: tabs, name, the small board for the secret opening, and the strength meter */
+/* Anchored near the top, not centred: the box grows downwards as the meter and messages fill in,
+   so the board never moves under your finger */
+.account { width: min(420px, calc(100vw - 32px)); margin: 3vh auto auto; max-height: 94vh; overflow-y: auto; }
+.acc-tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; margin-bottom: 12px; }
+.acc-tabs button { border-radius: 8px; padding: 8px; }
+.acc-tabs button[aria-selected="true"] { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+.acc-field { display: grid; gap: 4px; color: var(--muted); margin-bottom: 8px; }
+.acc-field input { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; }
+.acc-step { margin: 4px 0 8px; font-size: 0.92rem; min-height: 4.2em; }   /* the same height for every step, so the board below doesn't move */
+.acc-board { width: min(280px, 100%); aspect-ratio: 1; margin: 0 auto; }
+.acc-board.cg-wrap { width: min(280px, 100%); height: auto; }
+.acc-moves { margin: 6px 0; min-height: 1.4em; text-align: center; color: var(--muted); font-size: 0.9rem; }
+.acc-pad { display: flex; gap: 6px; justify-content: center; flex-wrap: wrap; margin-bottom: 8px; }
+.acc-pad button[hidden] { display: none; }
+.acc-error { margin: 0 0 8px; color: var(--danger); min-height: 1.2em; font-size: 0.9rem; }
+.meter[hidden] { display: none; }
+.meter { min-height: 3.6em; }   /* its room is kept while the book loads, so nothing below it jumps either */
+.meter .bar { height: 6px; border-radius: 3px; background: var(--bg); overflow: hidden; }
+.meter .bar span { display: block; height: 100%; width: 0; transition: width 0.2s, background 0.2s; }
+.meter[data-level="weak"] .bar span { width: 25%; background: var(--r-blunder); }
+.meter[data-level="fair"] .bar span { width: 50%; background: var(--r-inaccuracy); }
+.meter[data-level="good"] .bar span { width: 75%; background: var(--r-excellent); }
+.meter[data-level="strong"] .bar span { width: 100%; background: var(--r-best); }
+.meter p { margin: 6px 0 4px; font-size: 0.88rem; color: var(--muted); }
 .brand { color: var(--text); text-decoration: none; font-weight: 800; font-size: 1.25rem; letter-spacing: -0.01em; }
 .brand span { color: var(--accent); font-weight: 600; }
 

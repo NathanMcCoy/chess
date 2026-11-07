@@ -4,6 +4,7 @@ import { Chess } from '../vendor/chess.js';
 import { Chessground } from '../vendor/chessground.js';
 import { Engine, LEVELS } from './engine.js';
 import { RATING, RATINGS, rate, accuracy, whiteChance, evalText } from './review.js';
+import { initAccounts } from './account.js';
 
 const $ = id => document.getElementById(id);
 const SAVE = 'chess.game.v1';
@@ -30,12 +31,21 @@ let reviewError = null;
 let liner = null;           // a third Stockfish for the top lines of the position on the board, started when first needed
 let lineRequest = 0;        // numbers each request, so lines that arrive for a position you've left are ignored
 let lineState = { fen: null, lines: [], depth: 0 };
+let accounts = null;        // signing in, and keeping your game in your account (account.js)
 
-// --- Saving in this browser ------------------------------------------------------------------
+// --- Saving in this browser (and, when signed in, in your account: account.js) ----------------
 function load() {
   try {
-    const saved = JSON.parse(localStorage.getItem(SAVE) || 'null');
-    if (!saved || typeof saved.pgn !== 'string') return false;
+    return loadFrom(JSON.parse(localStorage.getItem(SAVE) || 'null'));
+  } catch {
+    return false;   // nothing saved, or it can't be read: start a fresh game
+  }
+}
+
+// A saved game (from this browser or from your account) into play. False if it isn't one.
+function loadFrom(saved) {
+  try {
+    if (!saved || typeof saved.pgn !== 'string' || (saved.variant && saved.variant !== 'chess')) return false;
     const g = new Chess();
     g.loadPgn(saved.pgn);
     game = g;
@@ -49,14 +59,32 @@ function load() {
     review = saved.review && saved.review.key === gameKey() && Array.isArray(saved.review.positions) ? saved.review : null;
     return true;
   } catch {
-    return false;   // nothing saved, or it can't be read: start a fresh game
+    return false;
   }
 }
 
+// The game as it's saved. `variant` says which rules it's played by (saves from before it existed
+// are chess); the hexagonal variant will save its own kind.
+const saved = () => ({ variant: 'chess', pgn: game.pgn(), player, level, orientation, result, review });
+
 function save() {
   try {
-    localStorage.setItem(SAVE, JSON.stringify({ pgn: game.pgn(), player, level, orientation, result, review }));
+    localStorage.setItem(SAVE, JSON.stringify(saved()));
   } catch { /* private browsing or storage full: the game still works, it just won't survive a reload */ }
+  accounts?.saved();   // and to your account, if you're signed in
+}
+
+// Your account's copy of the game, replacing the one in play (signing in on another device)
+function useSaved(data) {
+  stopEngine();
+  dropReview();
+  if (!loadFrom(data)) return false;
+  view = null;
+  cardClosed = false;
+  try { localStorage.setItem(SAVE, JSON.stringify(saved())); } catch { /* as above */ }
+  render();
+  if (!result && game.turn() !== player) engineMove();
+  return true;
 }
 
 // --- The board -------------------------------------------------------------------------------
@@ -684,3 +712,4 @@ if (load()) {
 } else {
   newGame('w', 3);
 }
+accounts = initAccounts({ saved, useSaved });
