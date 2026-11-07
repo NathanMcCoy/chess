@@ -190,6 +190,10 @@ async function flow(page, who, { touch, mouse }) {
   check(who, true, 'a finished game shows its card again after a reload');
   await page.locator('#first').click();
   check(who, await page.locator('#gameover').isHidden(), 'and hides it while looking back through the moves');
+  // A game saved before results recorded the winner still shows the right outcome
+  await seed(page, { pgn: '1. f3 e5 2. g4 Qh4# 0-1', player: 'w', level: 3, orientation: 'white', result: { score: '0-1', text: 'Checkmate. Stockfish wins.' } });
+  await card.waitFor();
+  check(who, (await card.locator('h2').innerText()) === 'Stockfish wins', 'an older saved game shows the right winner', await card.locator('h2').innerText());
 
   // Promotion: you choose the piece (a saved position with a pawn about to promote). A rook, not a
   // knight: king and knight against a lone king can't mate, so that would end the game as a draw

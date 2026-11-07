@@ -34,6 +34,8 @@ function load() {
     level = Math.min(10, Math.max(1, Number(saved.level) || 3));
     orientation = saved.orientation === 'black' ? 'black' : saved.orientation === 'white' ? 'white' : COLOR[player];
     result = saved.result && saved.result.score ? saved.result : null;
+    // Games saved before results recorded a winner: work it out from the score
+    if (result && !('winner' in result)) result.winner = { '1-0': 'w', '0-1': 'b' }[result.score] || null;
     return true;
   } catch {
     return false;   // nothing saved, or it can't be read: start a fresh game
