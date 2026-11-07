@@ -5,7 +5,7 @@
 import { chromium, webkit, devices } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { serve } from './server.mjs';
+import { start } from '../server/server.mjs';   // the real server, as deployed
 import { Chess } from '../site/vendor/chess.js';   // to check that suggested moves are legal
 
 const SHOTS = fileURLToPath(new URL('./shots/', import.meta.url));
@@ -353,7 +353,7 @@ const started = Date.now();
 // copy, instead of serving site/ here. That's safe: everything the tests do stays in their own
 // throwaway browsers; the site stores nothing.
 const remote = process.env.SITE_URL || (process.argv.includes('--live') ? 'https://chess.pacificfish.ca' : null);
-const server = remote ? null : await serve();
+const server = remote ? null : await start({ port: 0, host: '127.0.0.1' });
 const BASE = remote ? remote.replace(/\/$/, '') : `http://127.0.0.1:${server.address().port}`;
 console.log(`Testing ${BASE}`);
 await Promise.all(Object.keys(DEVICES).map(onDevice));
