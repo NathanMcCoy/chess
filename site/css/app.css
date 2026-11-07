@@ -80,6 +80,37 @@ cg-board square.check { background: radial-gradient(ellipse at center, rgba(224,
 .orientation-white .ranks :nth-child(even), .orientation-white .files :nth-child(even),
 .orientation-black .ranks :nth-child(odd), .orientation-black .files :nth-child(odd) { color: var(--dark-sq); }
 
+/* The result card over the board when a game ends */
+.gameover {
+  position: absolute; inset: 0; z-index: 20;
+  display: grid; place-items: center;
+  background: rgba(6, 18, 26, 0.55);
+  border-radius: 4px;
+  animation: go-in 0.25s ease-out;
+}
+.gameover[hidden] { display: none; }
+@keyframes go-in { from { opacity: 0; } to { opacity: 1; } }
+.go-card {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 18px 20px;
+  width: min(300px, 86%);
+  text-align: center;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45);
+  animation: go-pop 0.25s ease-out;
+}
+@keyframes go-pop { from { transform: translateY(8px) scale(0.97); } to { transform: none; } }
+.go-score { margin: 0; color: var(--muted); font-weight: 700; letter-spacing: 0.08em; }
+.go-card h2 { margin: 2px 0 4px; font-size: 1.7rem; }
+.go-card.win h2 { color: var(--accent); }
+.go-card.loss h2 { color: var(--danger); }
+.go-reason { margin: 0 0 16px; color: var(--muted); }
+.go-buttons { display: grid; gap: 8px; }
+.go-buttons button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 9px 10px; cursor: pointer; }
+.go-buttons button:hover { border-color: var(--muted); }
+.go-buttons button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+
 /* Choosing a promotion piece: four pieces over the board */
 .promotion { padding: 8px; border: 1px solid var(--line); border-radius: 10px; background: var(--panel); }
 .promotion::backdrop { background: rgba(0, 0, 0, 0.45); }
@@ -138,7 +169,7 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 }
 .moves button:hover { background: var(--panel-2); }
 .moves button.current { background: var(--accent); color: var(--accent-text); }
-.moves .result { grid-column: 1 / -1; text-align: center; color: var(--accent); font-weight: 700; padding: 6px; }
+.moves li.result { display: block; grid-column: 1 / -1; text-align: center; color: var(--accent); font-weight: 700; padding: 6px; }
 
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
 .actions #new-game { grid-column: 1 / -1; }

@@ -20,6 +20,7 @@ let orientation = 'white';
 let busy = false;           // Stockfish is thinking
 let request = 0;            // numbers each request, so an answer that arrives too late is ignored
 let engineError = null;
+let cardClosed = false;     // the result card was closed with "View the board" (it comes back on reload)
 
 // --- Saving in this browser ------------------------------------------------------------------
 function load() {
@@ -82,6 +83,7 @@ function render() {
   });
   renderMoves(moves, shown);
   renderStatus(live, shown);
+  renderCard(live);
   renderPlayers(pos);
   $('first').disabled = $('prev').disabled = shown === 0;
   $('next').disabled = $('last').disabled = live;
@@ -210,17 +212,43 @@ async function engineMove() {
   afterMove();
 }
 
+// A finished game: the score, who won ('w', 'b' or null for a draw), how, and a sentence for the
+// status line. Setting it also reopens the result card.
+function finish(winner, reason, text) {
+  result = { score: winner === 'w' ? '1-0' : winner === 'b' ? '0-1' : '1/2-1/2', winner, reason, text };
+  game.setHeader('Result', result.score);
+  cardClosed = false;
+}
+
 function checkEnd() {
   if (result) return;
-  const draw = text => ({ score: '1/2-1/2', text });
   if (game.isCheckmate()) {
     const winner = game.turn() === 'w' ? 'b' : 'w';
-    result = { score: winner === 'w' ? '1-0' : '0-1', text: winner === player ? 'Checkmate. You win!' : 'Checkmate. Stockfish wins.' };
-  } else if (game.isStalemate()) result = draw('Stalemate: a draw.');
-  else if (game.isInsufficientMaterial()) result = draw('A draw: neither side has enough pieces left to checkmate.');
-  else if (game.isThreefoldRepetition()) result = draw('A draw by repetition: the same position came up three times.');
-  else if (game.isDrawByFiftyMoves()) result = draw('A draw by the fifty-move rule.');
-  if (result) game.setHeader('Result', result.score);
+    finish(winner, 'checkmate', winner === player ? 'Checkmate. You win!' : 'Checkmate. Stockfish wins.');
+  } else if (game.isStalemate()) finish(null, 'stalemate', 'Stalemate: a draw.');
+  else if (game.isInsufficientMaterial()) finish(null, 'material', 'A draw: neither side has enough pieces left to checkmate.');
+  else if (game.isThreefoldRepetition()) finish(null, 'repetition', 'A draw by repetition: the same position came up three times.');
+  else if (game.isDrawByFiftyMoves()) finish(null, 'fifty', 'A draw by the fifty-move rule.');
+}
+
+// The card over the board: shown while you're at the end of a finished game, until you close it
+const REASONS = {
+  checkmate: 'By checkmate.', resign: 'You resigned.', stalemate: 'Stalemate: no legal moves, but no check.',
+  material: 'Neither side can checkmate any more.', repetition: 'The same position came up three times.',
+  fifty: 'Fifty moves with no capture or pawn move.',
+};
+function renderCard(live) {
+  const box = $('gameover');
+  box.hidden = !(result && live && !cardClosed);
+  if (box.hidden) return;
+  const card = box.querySelector('.go-card');
+  const outcome = !result.winner ? 'draw' : result.winner === player ? 'win' : 'loss';
+  card.className = `go-card ${outcome}`;
+  $('go-title').textContent = outcome === 'win' ? 'You win!' : outcome === 'loss' ? 'Stockfish wins' : 'Draw';
+  $('go-score').textContent = result.score.replace(/1\/2/g, '½');
+  const moves = Math.ceil(game.history().length / 2);
+  const how = REASONS[result.reason] || result.text;   // games saved before reasons existed
+  $('go-reason').textContent = `${how} Level ${level}, ${moves} move${moves === 1 ? '' : 's'}.`;
 }
 
 function stopEngine() {
@@ -343,14 +371,16 @@ document.addEventListener('keydown', e => {
 });
 
 $('new-game').onclick = openNewGame;
+$('go-rematch').onclick = () => newGame(player, level);
+$('go-new').onclick = openNewGame;
+$('go-close').onclick = () => { cardClosed = true; render(); };
 $('undo').onclick = takeBack;
 $('flip').onclick = () => { orientation = orientation === 'white' ? 'black' : 'white'; save(); render(); };
 $('download').onclick = downloadPgn;
 $('resign').onclick = async () => {
   if (!(await confirmBox('Resign this game? Stockfish will be given the win.', 'Resign'))) return;
   stopEngine();
-  result = { score: player === 'w' ? '0-1' : '1-0', text: 'You resigned. Stockfish wins.' };
-  game.setHeader('Result', result.score);
+  finish(player === 'w' ? 'b' : 'w', 'resign', 'You resigned. Stockfish wins.');
   view = null;
   save();
   render();

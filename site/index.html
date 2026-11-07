@@ -20,6 +20,18 @@
       <div class="player" id="top-player"><span class="name"></span><span class="taken"></span></div>
       <div class="board-box">
         <div id="board" class="board"></div>
+        <div id="gameover" class="gameover" hidden>
+          <div class="go-card" role="dialog" aria-labelledby="go-title" aria-describedby="go-reason">
+            <p class="go-score" id="go-score"></p>
+            <h2 id="go-title"></h2>
+            <p class="go-reason" id="go-reason"></p>
+            <div class="go-buttons">
+              <button type="button" id="go-rematch" class="primary">Rematch</button>
+              <button type="button" id="go-new">New game…</button>
+              <button type="button" id="go-close">View the board</button>
+            </div>
+          </div>
+        </div>
         <dialog id="promotion" class="promotion" aria-label="Promote to">
           <div class="cg-wrap promo-pieces">
             <button type="button" data-piece="q" aria-label="Queen"><piece class="queen"></piece></button>

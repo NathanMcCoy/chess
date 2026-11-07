@@ -161,6 +161,18 @@ async function flow(page, who, { touch, mouse }) {
   const resigned = `${await status(page)} | ${await page.locator('#moves .result').innerText().catch(() => 'no result row')}`;
   check(who, resigned === 'You resigned. Stockfish wins. | 1-0', 'resigning gives Stockfish the win', resigned);
 
+  // The result card over the board, and Rematch: same side and level, so Stockfish opens again
+  const card = page.locator('#gameover:not([hidden])');
+  await card.waitFor();
+  const cardText = async () => `${await card.locator('h2').innerText()} | ${await card.locator('.go-reason').innerText()} | ${await card.locator('.go-score').innerText()}`;
+  check(who, (await cardText()) === 'Stockfish wins | You resigned. Level 9, 2 moves. | 1-0', 'a card over the board shows the result', await cardText());
+  check(who, await card.locator('.go-card.loss').count() === 1, 'marked as a loss');
+  await card.getByRole('button', { name: 'Rematch' }).click();
+  await waitMoves(page, 1, 'Stockfish opening the rematch');
+  check(who, await page.locator('#gameover').isHidden() && await page.locator('.cg-wrap.orientation-black').count() === 1
+    && /level 9/.test(await page.locator('#top-player .name').innerText()), 'Rematch starts again as Black at the same level');
+  await page.waitForFunction(() => document.querySelector('#status').textContent === 'Your move.');
+
   // Checkmate (a saved game one move from Fool's Mate, you as Black)
   await seed(page, { pgn: '1. f3 e5 2. g4 *', player: 'b', level: 1, orientation: 'black' });
   await move(page, 'd8', 'h4', touch);
@@ -169,6 +181,15 @@ async function flow(page, who, { touch, mouse }) {
   // The board draws its highlights on the next screen refresh, so give it a moment (still fails if it never does)
   const inCheck = await page.locator('cg-board square.check').waitFor({ timeout: 2000 }).then(() => true, () => false);
   check(who, await page.locator('#resign').isDisabled() && inCheck && await page.locator('cg-board square.check').count() === 1, 'the king is shown in check and Resign is off');
+  await card.waitFor();
+  check(who, (await cardText()) === 'You win! | By checkmate. Level 1, 2 moves. | 0-1' && await card.locator('.go-card.win').count() === 1, 'the card shows a win', await cardText());
+  await card.getByRole('button', { name: 'View the board' }).click();
+  check(who, await page.locator('#gameover').isHidden() && (await status(page)) === 'Checkmate. You win!', 'View the board closes the card, and the result stays in the panel');
+  await page.reload();
+  await card.waitFor();
+  check(who, true, 'a finished game shows its card again after a reload');
+  await page.locator('#first').click();
+  check(who, await page.locator('#gameover').isHidden(), 'and hides it while looking back through the moves');
 
   // Promotion: you choose the piece (a saved position with a pawn about to promote). A rook, not a
   // knight: king and knight against a lone king can't mate, so that would end the game as a draw
