@@ -208,7 +208,15 @@ async function flow(page, who, { touch, mouse }) {
   check(who, await page.locator('cg-board piece.rook.white').count() === 1, 'the new rook is on the board');
   const takenText = `${await page.locator('#bottom-player .taken').innerText()} / ${await page.locator('#top-player .taken').innerText()}`;
   check(who, takenText === '+5 / ', 'you’re +5 and the promoted pawn isn’t counted as captured', JSON.stringify(takenText));
-  await page.screenshot({ path: `${SHOTS}${who}.png` });
+  await screenshot(page, `${SHOTS}${who}.png`);
+}
+
+// Playwright's screenshots add a <style> to the page (to hide the text cursor), which the security
+// policy blocks and WebKit reports. That's the test's doing, not the site's, so reports during a
+// screenshot don't count; everything else still does.
+async function screenshot(page, path) {
+  page.shooting = true;
+  try { await page.screenshot({ path }); await page.waitForTimeout(100); } finally { page.shooting = false; }
 }
 
 async function onDevice(name) {
@@ -219,6 +227,9 @@ async function onDevice(name) {
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
+  // Anything the security policy blocks is a failure: the live site would break the same way
+  await page.addInitScript(() => addEventListener('securitypolicyviolation', e => console.log(`CSP blocked ${e.violatedDirective}: ${e.blockedURI || 'inline'}`)));
+  page.on('console', m => { if (!page.shooting && /^CSP blocked|Content Security Policy|Refused to/.test(m.text())) errors.push(m.text()); });
   page.on('dialog', d => { errors.push(`browser popup: ${d.message()}`); d.dismiss(); });
   try {
     await flow(page, name, { touch: !!device.hasTouch, mouse });
@@ -226,7 +237,7 @@ async function onDevice(name) {
   } catch (e) {
     const where = (e.stack.match(/run\.mjs:\d+/) || ['?'])[0];
     check(name, false, `stopped early at ${where}`, `${e.message.split('\n')[0]}${errors.length ? ` | page errors: ${errors.join(' | ')}` : ''}`);
-    await page.screenshot({ path: `${SHOTS}${name}-failed.png` }).catch(() => {});
+    await screenshot(page, `${SHOTS}${name}-failed.png`).catch(() => {});
   }
   await browser.close();
 }

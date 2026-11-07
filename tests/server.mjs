@@ -12,6 +12,20 @@ const TYPES = {
   '.txt': 'text/plain; charset=utf-8', '.md': 'text/plain; charset=utf-8', '.ico': 'image/x-icon',
 };
 
+// The same headers nginx sends on the server (P:\websites\chess\nginx.conf): keep the two the same,
+// so the tests catch the security policy blocking something the site needs.
+//   no-cache: browsers check for a newer file every time (cheap: unchanged files answer 304), so an
+//     update reaches visitors at once. Cloudflare follows it (Browser Cache TTL: Respect Existing Headers).
+//   Content-Security-Policy: only files from this site may run, load or be fetched. 'wasm-unsafe-eval'
+//     lets Stockfish compile its WebAssembly; data: images are the piece set's built-in pictures.
+export const HEADERS = {
+  'Cache-Control': 'no-cache',
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+};
+
 export function serve(port = 0) {
   const server = createServer(async (req, res) => {
     const path = decodeURIComponent(new URL(req.url, 'http://x').pathname);
@@ -20,7 +34,7 @@ export function serve(port = 0) {
     try {
       if ((await stat(file)).isDirectory()) file = join(file, 'index.html');
       const body = await readFile(file);
-      res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', 'Cache-Control': 'no-cache' });
+      res.writeHead(200, { 'Content-Type': TYPES[extname(file)] || 'application/octet-stream', ...HEADERS });
       res.end(body);
     } catch {
       res.writeHead(404, { 'Content-Type': 'text/plain' }).end('Not found');
