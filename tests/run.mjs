@@ -421,6 +421,85 @@ async function flow(page, who, { touch, mouse, freshPage }) {
 
   }
 
+  // Playing a friend: one browser makes a game (each side its own time), a second opens the link
+  // and joins, they play, offer and agree a draw, a third watches, and the first goes back to
+  // Stockfish. Not on the live site, where it would leave real games behind.
+  if (remote) check(who, true, 'playing a friend skipped on the live site');
+  else {
+    const host = await freshPage();
+    await host.goto('/');
+    await host.locator('#board cg-board piece').first().waitFor();
+    // A game against Stockfish first, so "Back to Stockfish" has something real to bring back
+    await move(host, 'd2', 'd4', touch);
+    await waitMoves(host, 2, 'Stockfish answering before the friend game');
+    const hostStockfish = JSON.stringify(await host.locator('#moves button').allInnerTexts());
+    await host.locator('#play-friend').click();
+    const fd = host.locator('#friend-dialog[open]');
+    await fd.waitFor();
+    check(who, await fd.locator('#fr-same').isChecked() && await fd.locator('#fr-black-row').isHidden(), 'Play a friend starts with the same time for both');
+    await fd.locator('#fr-same').uncheck();
+    await fd.locator('#fr-w-min').fill('3'); await fd.locator('#fr-w-inc').fill('2');
+    await fd.locator('#fr-b-min').fill('10'); await fd.locator('#fr-b-inc').fill('5');
+    await fd.locator('input[name=fr-side][value=w]').check();
+    await fd.getByRole('button', { name: 'Make the link' }).click();
+    await host.locator('#ob-link-row:not([hidden])').waitFor();
+    const link = await host.locator('#ob-link').inputValue();
+    const clocks = async p => [await p.locator('#bottom-player .clock').innerText(), await p.locator('#top-player .clock').innerText()];
+    check(who, /\/\?g=[\w-]{12}$/.test(link) && /Waiting for your friend/.test(await status(host)), 'it makes a link and waits', link);
+    check(who, JSON.stringify(await clocks(host)) === '["3:00","10:00"]', 'each side’s own clock', JSON.stringify(await clocks(host)));
+    check(who, (await host.locator('#top-player .name').innerText()) === 'Waiting for your friend…', 'the other side says it’s still to come', await host.locator('#top-player .name').innerText());
+
+    const guest = await freshPage();
+    await guest.goto(link);
+    const invite = guest.locator('#confirm[open]');
+    await invite.waitFor();
+    check(who, /play Black \(you 10\+5, them 3\+2\)/.test(await invite.locator('#confirm-text').innerText()), 'the link invites the friend, with the times', await invite.locator('#confirm-text').innerText());
+    await invite.getByRole('button', { name: 'Play' }).click();
+    await guest.waitForFunction(() => document.querySelector('#status').textContent === 'Your friend’s move.');
+    check(who, await guest.locator('#board.orientation-black').count() === 1, 'the friend plays Black, board turned round');
+    await host.waitForFunction(() => document.querySelector('#status').textContent === 'Your move.');
+    check(who, (await host.locator('#top-player .name').innerText()) === 'Your friend' && await host.locator('#ob-link-row').isHidden(), 'the maker sees the friend arrive, live');
+
+    // Moves cross over, live
+    await move(host, 'e2', 'e4', touch);
+    await guest.waitForFunction(() => document.querySelectorAll('#moves button').length === 1);
+    check(who, (await guest.locator('#moves button').first().innerText()) === 'e4' && (await status(guest)) === 'Your move.', 'the move reaches the friend');
+    check(who, await guest.locator('#bottom-player .clock.running').count() === 1, 'and the friend’s clock is the one running');
+    await move(guest, 'e7', 'e5', touch);
+    await host.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
+    check(who, (await status(host)) === 'Your move.', 'and back');
+    await host.waitForTimeout(1200);
+    const [mine] = await clocks(host);
+    check(who, /^2:5\d$/.test(mine) && await host.locator('#bottom-player .clock.running').count() === 1, 'the maker’s clock now counts down from 3:00', mine);
+    await move(guest, 'd7', 'd5', touch);
+    await guest.waitForTimeout(300);
+    check(who, (await guest.locator('#moves button').count()) === 2, 'a move out of turn isn’t played');
+
+    // A draw: offered by the maker, accepted by the friend
+    await host.locator('#ob-draw').click();
+    await guest.locator('#ob-accept:not([hidden])').waitFor();
+    check(who, (await status(guest)) === 'Your friend offers a draw.', 'the friend is told of the offer');
+    await guest.locator('#ob-accept').click();
+    for (const p of [host, guest]) await p.locator('#gameover:not([hidden])').waitFor();
+    check(who, (await host.locator('#go-title').innerText()) === 'Draw' && (await guest.locator('#go-title').innerText()) === 'Draw'
+      && /^A draw, by agreement\. 3\+2 against 10\+5, 1 move\.$/.test(await host.locator('#go-reason').innerText()), 'both see the draw', await host.locator('#go-reason').innerText());
+
+    // Someone else with the link watches: the game, but no moves of theirs
+    const watcher = await freshPage();
+    await watcher.goto(link);
+    await watcher.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
+    check(who, /draw, by agreement/.test(await status(watcher)) && await watcher.locator('#ob-draw').isHidden(), 'a third person can watch it');
+
+    // Back to Stockfish: the game against it is as it was
+    await host.locator('#gameover').getByRole('button', { name: 'View the board' }).click();
+    await host.locator('#ob-leave').click();
+    await host.locator('#online-box').waitFor({ state: 'hidden' });
+    const back = JSON.stringify(await host.locator('#moves button').allInnerTexts());
+    check(who, back === hostStockfish && JSON.parse(back).length === 2 && await host.locator('#bottom-player .clock').isHidden() && !new URL(host.url()).search,
+      'Back to Stockfish brings back that game', `${back}, ${host.url()}`);
+    for (const p of [host, guest, watcher]) await p.close();
+  }
+
   // When Stockfish can't work, say so instead of "thinking" forever. Each case in a fresh browser.
   // Its loader missing: the worker reports an error straight away.
   const noLoader = await freshPage();

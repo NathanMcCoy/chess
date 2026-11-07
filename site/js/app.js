@@ -5,6 +5,7 @@ import { Chessground } from '../vendor/chessground.js';
 import { Engine, LEVELS } from './engine.js';
 import { RATING, RATINGS, rate, accuracy, whiteChance, evalText } from './review.js';
 import { initAccounts } from './account.js';
+import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame } from './online.js';
 
 const $ = id => document.getElementById(id);
 const SAVE = 'chess.game.v1';
@@ -32,6 +33,7 @@ let liner = null;           // a third Stockfish for the top lines of the positi
 let lineRequest = 0;        // numbers each request, so lines that arrive for a position you've left are ignored
 let lineState = { fen: null, lines: [], depth: 0 };
 let accounts = null;        // signing in, and keeping your game in your account (account.js)
+let online = null;          // a game against a person, while one is open: { id, you, view, at, stop, problem }
 
 // --- Saving in this browser (and, when signed in, in your account: account.js) ----------------
 function load() {
@@ -68,6 +70,7 @@ function loadFrom(saved) {
 const saved = () => ({ variant: 'chess', pgn: game.pgn(), player, level, orientation, result, review });
 
 function save() {
+  if (online) return;   // a game against a person is kept by the server; your Stockfish game stays as it was
   try {
     localStorage.setItem(SAVE, JSON.stringify(saved()));
   } catch { /* private browsing or storage full: the game still works, it just won't survive a reload */ }
@@ -76,6 +79,8 @@ function save() {
 
 // Your account's copy of the game, replacing the one in play (signing in on another device)
 function useSaved(data) {
+  // In a game against a person: keep your account's Stockfish game for later, don't switch to it
+  if (online) { try { localStorage.setItem(SAVE, JSON.stringify(data)); } catch { /* as above */ } return true; }
   stopEngine();
   dropReview();
   if (!loadFrom(data)) return false;
@@ -114,14 +119,15 @@ function render() {
   const fen = shown === 0 ? startFen() : moves[shown - 1].after;
   const pos = live ? game : new Chess(fen);
   const last = moves[shown - 1];
-  const yourTurn = live && !result && !busy && !engineError && game.turn() === player;
+  const mine = online ? online.you : player;   // watching a game: nobody's moves are yours
+  const yourTurn = live && !result && !busy && !engineError && !!mine && game.turn() === mine && (!online || online.view.status === 'playing');
   board.set({
     fen,
     orientation,
     turnColor: COLOR[pos.turn()],
     lastMove: last ? [last.from, last.to] : undefined,
     check: pos.inCheck(),
-    movable: { color: yourTurn ? COLOR[player] : undefined, dests: yourTurn ? legalMoves(pos) : new Map() },
+    movable: { color: yourTurn ? COLOR[mine] : undefined, dests: yourTurn ? legalMoves(pos) : new Map() },
   });
   renderMoves(moves, shown);
   renderStatus(live, shown);
@@ -131,9 +137,11 @@ function render() {
   $('first').disabled = $('prev').disabled = shown === 0;
   $('next').disabled = $('last').disabled = live;
   $('undo').disabled = !moves.some(m => m.color === player);
-  $('resign').disabled = !!result || moves.length === 0;
+  $('resign').disabled = online ? !(online.you && online.view.status === 'playing') : !!result || moves.length === 0;
   $('download').disabled = moves.length === 0;
   $('review-game').hidden = !result || moves.length === 0;
+  renderOnline();
+  renderClocks();
 }
 
 function renderMoves(moves, shown) {
@@ -189,16 +197,18 @@ function renderStatus(live, shown) {
   const status = $('status');
   status.classList.toggle('over', !!result && live);
   status.classList.toggle('broken', !!engineError);
-  if (engineError) status.textContent = `Stockfish isn’t working: ${engineError}. Reload the page to try again.`;
+  if (notice && !online) status.textContent = notice;
+  else if (engineError && !online) status.textContent = `Stockfish isn’t working: ${engineError}. Reload the page to try again.`;
   else if (reviewing) status.textContent = result ? result.text : 'Game review';
   else if (!live) status.textContent = `Looking at move ${Math.ceil(shown / 2) || 'start'}. Press ⏭ to go back to the game.`;
+  else if (online) status.textContent = onlineStatus();
   else if (result) status.textContent = result.text;
   else if (busy) status.textContent = 'Stockfish is thinking…';
   else status.textContent = game.inCheck() ? 'Check! Your move.' : 'Your move.';
 }
 
 function renderPlayers(pos) {
-  const name = side => side === player ? 'You' : `Stockfish · level ${level}, ${LEVELS[level - 1].name}`;
+  const name = side => sideName(side);
   // What each side has captured, from the moves themselves (counting what's missing from the
   // board would also count a pawn that promoted), and who's ahead on material on the board now
   const shown = view === null ? Infinity : view;
@@ -235,6 +245,8 @@ async function onBoardMove(from, to) {
     return render();
   }
   view = null;
+  notice = null;
+  if (online) { online.problem = null; render(); return sendMove(from + to + (promotion || '')); }
   afterMove();
 }
 
@@ -303,13 +315,20 @@ function renderCard(live) {
   box.hidden = !(result && live && !cardClosed && !reviewing);
   if (box.hidden) return;
   const card = box.querySelector('.go-card');
-  const outcome = !result.winner ? 'draw' : result.winner === player ? 'win' : 'loss';
+  const you = online ? online.you : player;
+  const outcome = !result.winner ? 'draw' : !you ? 'draw' : result.winner === you ? 'win' : 'loss';
   card.className = `go-card ${outcome}`;
-  $('go-title').textContent = outcome === 'win' ? 'You win!' : outcome === 'loss' ? 'Stockfish wins' : 'Draw';
+  $('go-title').textContent = online
+    ? (result.reason === 'aborted' ? 'Called off' : !result.winner ? 'Draw' : !you ? `${COLOR_NAME[result.winner]} wins` : outcome === 'win' ? 'You win!' : 'Your friend wins')
+    : outcome === 'win' ? 'You win!' : outcome === 'loss' ? 'Stockfish wins' : 'Draw';
+  $('go-rematch').hidden = !!online;
   $('go-score').textContent = result.score.replace(/1\/2/g, '½');
   const moves = Math.ceil(game.history().length / 2);
   const how = REASONS[result.reason] || result.text;   // games saved before reasons existed
-  $('go-reason').textContent = `${how} Level ${level}, ${moves} move${moves === 1 ? '' : 's'}.`;
+  const length = `${moves} move${moves === 1 ? '' : 's'}`;
+  $('go-reason').textContent = online
+    ? `${result.text} ${timeText(online.view.times.w)} against ${timeText(online.view.times.b)}, ${length}.`
+    : `${how} Level ${level}, ${length}.`;
 }
 
 // Stockfish has stopped working: say so, and stop the game where it is (you can still look back
@@ -340,6 +359,8 @@ function takeBack() {
 }
 
 function newGame(side, newLevel) {
+  if (online) { leaveOnline(); if (location.search) history.pushState(null, '', location.pathname); }
+  notice = null;
   stopEngine();
   engine.newGame();
   game = new Chess();
@@ -527,7 +548,7 @@ function renderReview(moves, shown) {
   else if (!r) verdict.textContent = `${moves[shown - 1].san}: still being analysed…`;
   else {
     const m = moves[shown - 1], before = positions[shown - 1], label = RATING[r.rating].label.toLowerCase();
-    const who = m.color === player ? 'Your' : 'Stockfish’s';
+    const who = possessive(m.color);
     verdict.replaceChildren();
     verdict.style.setProperty('--rc', `var(--r-${r.rating})`);
     const head = document.createElement('span');
@@ -567,7 +588,7 @@ function renderReview(moves, shown) {
     + marks + `<line class="now" x1="${x(shown)}" x2="${x(shown)}" y1="0" y2="32"/>`;
 
   // The summary: accuracy and how many moves of each rating, for each side
-  const sides = ['w', 'b'].map(c => ({ c, name: c === player ? 'You' : 'Stockfish', losses: [], counts: {} }));
+  const sides = ['w', 'b'].map(c => ({ c, name: sideName(c, true), losses: [], counts: {} }));
   for (let i = 0; i < moves.length; i++) {
     const ri = ratingOf(i, moves);
     if (!ri) continue;
@@ -597,6 +618,215 @@ function renderReview(moves, shown) {
   for (const rt of RATINGS) body.append(row([[rt.label, rt.id, 'td', 'label'], ...sides.map(s => [String(s.counts[rt.id] || 0), s.counts[rt.id] ? rt.id : null])]));
   table.append(head, body);
 }
+
+// --- Games against people (online.js talks to the server) -----------------------------------
+// While one is open, the board shows it instead of your game against Stockfish, which stays saved
+// and comes back with "Back to Stockfish". Your own moves show at once and go to the server, which
+// checks them and sends the game back to both players (and anyone watching) on its live stream.
+const COLOR_NAME = { w: 'White', b: 'Black' };
+const otherSide = c => (c === 'w' ? 'b' : 'w');
+let clockTimer = null;
+let notice = null;   // a one-off message for the status line (e.g. a link that doesn't work)
+
+// Who a side is, for the player bars, the status line and the review
+function sideName(c, short = false) {
+  if (!online) return c === player ? 'You' : short ? 'Stockfish' : `Stockfish · level ${level}, ${LEVELS[level - 1].name}`;
+  if (c === online.you) return 'You';
+  const p = online.view.players[c];
+  if (online.you) return p.name || (p.joined ? 'Your friend' : 'Waiting for your friend…');
+  return p.name || (p.joined ? `Guest (${COLOR_NAME[c]})` : `Waiting (${COLOR_NAME[c]})`);
+}
+const possessive = c => (sideName(c, true) === 'You' ? 'Your' : `${sideName(c, true)}’s`);
+
+async function openOnline(id) {
+  stopEngine();
+  dropReview();
+  leaveOnline();
+  let v;
+  try {
+    v = await getGame(id);
+  } catch (e) {
+    return backToStockfish(false, e.status === 404 ? 'That game link doesn’t work: there’s no such game.' : `Couldn’t open that game: ${e.message}`);
+  }
+  if (!v.you && v.status === 'waiting') {
+    const side = v.players.w.joined ? 'b' : 'w';
+    const yours = timeText(v.times[side]), theirs = timeText(v.times[otherSide(side)]);
+    const same = yours === theirs ? `${yours} each` : `you ${yours}, them ${theirs}`;
+    if (!(await confirmBox(`You’re invited to play ${COLOR_NAME[side]} (${same}). Play?`, 'Play'))) return backToStockfish(true);
+    try {
+      await joinGame(id);
+      v = await getGame(id);
+    } catch (e) {
+      return backToStockfish(true, `Couldn’t join that game: ${e.message}`);
+    }
+  }
+  online = { id, you: v.you, view: v, at: performance.now(), stop: null, problem: null };
+  document.body.classList.add('online');
+  orientation = v.you === 'b' ? 'black' : 'white';
+  cardClosed = false;
+  view = null;
+  online.stop = follow(id, applyView);
+  applyView(v);
+  clockTimer = setInterval(renderClocks, 200);
+}
+
+// The game as the server sent it
+function applyView(v) {
+  if (!online || v.id !== online.id) return;
+  const wasOver = ['over', 'aborted'].includes(online.view.status) && game.history().length === v.moves.length;
+  online.view = v;
+  online.at = performance.now();
+  if (v.you) online.you = v.you;   // the stream's copy says null: it's the same for everyone
+  const have = game.history({ verbose: true }).map(m => m.from + m.to + (m.promotion || ''));
+  if (startFen() !== v.start || have.join(' ') !== v.moves.join(' ')) {
+    const g = new Chess(v.start);
+    for (const m of v.moves) g.move({ from: m.slice(0, 2), to: m.slice(2, 4), promotion: m[4] });
+    game = g;
+    if (view !== null && view > v.moves.length) view = null;
+  }
+  for (const c of ['w', 'b']) game.setHeader(COLOR_NAME[c], v.players[c].name || (c === online.you ? 'You' : 'Guest'));
+  game.setHeader('Site', 'chess.pacificfish.ca');
+  player = online.you || 'w';
+  result = onlineResult(v);
+  game.setHeader('Result', result ? result.score : '*');
+  if (result && !wasOver) cardClosed = false;
+  render();
+}
+
+function onlineResult(v) {
+  if (v.status === 'aborted') return { score: '*', winner: null, reason: 'aborted', text: 'The game was called off.' };
+  if (v.status !== 'over' || !v.result) return null;
+  const { winner, reason } = v.result, you = online.you;
+  const score = winner === 'w' ? '1-0' : winner === 'b' ? '0-1' : '1/2-1/2';
+  const wins = w => (w === you ? 'You win!' : you ? 'Your friend wins.' : `${COLOR_NAME[w]} wins.`);
+  const loser = winner && otherSide(winner);
+  const texts = {
+    checkmate: () => `Checkmate. ${wins(winner)}`,
+    resign: () => (loser === you ? 'You resigned.' : you ? 'Your friend resigned. You win!' : `${COLOR_NAME[loser]} resigned.`),
+    time: () => (loser === you ? 'Your time ran out.' : you ? 'Your friend ran out of time. You win!' : `${COLOR_NAME[loser]} ran out of time.`),
+    agreement: () => 'A draw, by agreement.',
+    stalemate: () => 'Stalemate: a draw.',
+    material: () => 'A draw: neither side has enough pieces left to checkmate.',
+    repetition: () => 'A draw by repetition: the same position came up three times.',
+    fifty: () => 'A draw by the fifty-move rule.',
+  };
+  return { score, winner, reason, text: (texts[reason] || (() => 'The game is over.'))() };
+}
+
+// Your move, at once on the board, then to the server; if it refuses (say the game ended just
+// then), the board goes back to the server's game
+async function sendMove(uci) {
+  try {
+    applyView(await act(online.id, 'move', { move: uci }));
+  } catch (e) {
+    if (!online) return;
+    online.problem = e.message;
+    try { applyView(await getGame(online.id)); } catch { render(); }
+  }
+}
+
+async function onlineAction(action, ask) {
+  if (!online) return;
+  if (ask && !(await confirmBox(ask[0], ask[1]))) return;
+  try { applyView(await act(online.id, action)); } catch (e) { online.problem = e.message; render(); }
+}
+
+function leaveOnline() {
+  if (!online) return;
+  online.stop?.();
+  clearInterval(clockTimer);
+  online = null;
+  document.body.classList.remove('online');
+  renderClocks();
+}
+
+// Back to your game against Stockfish, as it was saved
+function backToStockfish(changeAddress = true, message = null) {
+  leaveOnline();
+  if (changeAddress && location.search) history.pushState(null, '', location.pathname);
+  notice = message;
+  dropReview();
+  if (!load()) return newGame('w', 3);
+  view = null;
+  orientation = COLOR[player] || orientation;
+  render();
+  if (!result && game.turn() !== player) engineMove();
+}
+
+function onlineStatus() {
+  const v = online.view, you = online.you, turn = game.turn();
+  if (online.problem) return online.problem;
+  if (result) return result.text;
+  if (v.status === 'waiting') return you ? 'Waiting for your friend: send them the link below.' : 'Waiting for a second player.';
+  let text = you ? (turn === you ? (game.inCheck() ? 'Check! Your move.' : 'Your move.') : 'Your friend’s move.') : `${COLOR_NAME[turn]} to move.`;
+  if (you && v.drawOffer === otherSide(you)) text = 'Your friend offers a draw.';
+  else if (you && v.drawOffer === you) text += ' You’ve offered a draw.';
+  return text;
+}
+
+function renderOnline() {
+  const box = $('online-box');
+  box.hidden = !online;
+  if (!online) return;
+  const v = online.view, you = online.you, playing = v.status === 'playing';
+  $('ob-link-row').hidden = !(you && v.status === 'waiting');
+  $('ob-link').value = `${location.origin}/?g=${online.id}`;
+  const theirOffer = you && playing && v.drawOffer === otherSide(you);
+  $('ob-draw').hidden = !(you && playing) || theirOffer;
+  $('ob-draw').disabled = v.drawOffer === you;
+  $('ob-draw').textContent = v.drawOffer === you ? 'Draw offered' : 'Offer draw';
+  $('ob-accept').hidden = $('ob-decline').hidden = !theirOffer;
+  $('ob-abort').hidden = !(you && (v.status === 'waiting' || (playing && v.moves.length < 2)));
+  $('ob-leave').textContent = 'Back to Stockfish';
+}
+
+// Each side's clock, counting down between the server's updates from what it last said (by this
+// device's own timer, so its clock being off doesn't matter)
+function renderClocks() {
+  const bottom = orientation === 'white' ? 'w' : 'b';
+  for (const [id, side] of [['bottom-player', bottom], ['top-player', otherSide(bottom)]]) {
+    const el = $(id).querySelector('.clock');
+    el.hidden = !online;
+    if (!online) continue;
+    const v = online.view;
+    const running = v.running === side;
+    const ms = v.clocks[side] - (running ? performance.now() - online.at : 0);
+    el.textContent = clockText(ms);
+    el.classList.toggle('running', running);
+    el.classList.toggle('low', ms < 20_000 && v.status === 'playing');
+  }
+}
+
+$('play-friend').onclick = async () => {
+  const settings = await askForGame();
+  if (!settings) return;
+  try {
+    const r = await createGame(settings);
+    history.pushState(null, '', `?g=${r.id}`);
+    await openOnline(r.id);
+  } catch (e) {
+    notice = `Couldn’t make the game: ${e.message}`;
+    render();
+  }
+};
+$('ob-copy').onclick = () => {
+  const done = () => { $('ob-copy').textContent = 'Copied!'; setTimeout(() => { $('ob-copy').textContent = 'Copy link'; }, 1500); };
+  navigator.clipboard?.writeText($('ob-link').value).then(done, () => $('ob-link').select()) ?? $('ob-link').select();
+};
+$('ob-draw').onclick = () => onlineAction('draw');
+$('ob-accept').onclick = () => onlineAction('draw');
+$('ob-decline').onclick = () => onlineAction('decline');
+$('ob-abort').onclick = () => onlineAction('abort', ['Call off this game? It won’t count for either side.', 'Call off']);
+$('ob-leave').onclick = async () => {
+  if (online && online.you && online.view.status === 'playing'
+    && !(await confirmBox('Leave this game? It goes on without you: your clock keeps running. You can come back by its link.', 'Leave'))) return;
+  backToStockfish();
+};
+addEventListener('popstate', () => {
+  const id = new URLSearchParams(location.search).get('g');
+  if (id && (!online || online.id !== id)) openOnline(id);
+  else if (!id && online) backToStockfish(false);
+});
 
 // --- Boxes -----------------------------------------------------------------------------------
 function choosePromotion() {
@@ -695,6 +925,7 @@ $('undo').onclick = takeBack;
 $('flip').onclick = () => { orientation = orientation === 'white' ? 'black' : 'white'; save(); render(); };
 $('download').onclick = downloadPgn;
 $('resign').onclick = async () => {
+  if (online) return onlineAction('resign', ['Resign this game? Your friend will be given the win.', 'Resign']);
   if (!(await confirmBox('Resign this game? Stockfish will be given the win.', 'Resign'))) return;
   stopEngine();
   finish(player === 'w' ? 'b' : 'w', 'resign', 'You resigned. Stockfish wins.');
@@ -713,3 +944,6 @@ if (load()) {
   newGame('w', 3);
 }
 accounts = initAccounts({ saved, useSaved });
+// A game link (?g=...) opens that game against a person
+const linked = new URLSearchParams(location.search).get('g');
+if (linked) openOnline(linked);
