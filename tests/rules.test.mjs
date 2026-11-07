@@ -9,7 +9,8 @@ test('variants are looked up by id, and a missing id means chess', () => {
   assert.equal(variant('chess'), VARIANTS.chess);
   assert.equal(variant(undefined), VARIANTS.chess, 'saves from before variants existed');
   assert.equal(DEFAULT_VARIANT, 'chess');
-  assert.equal(variant('hex'), null, 'not yet');
+  assert.equal(variant('hex'), VARIANTS.hex);
+  assert.equal(variant('nonsense'), null);
 });
 
 test('every variant provides the whole interface', () => {
