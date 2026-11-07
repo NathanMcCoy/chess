@@ -243,9 +243,14 @@ async function onDevice(name) {
 }
 
 const started = Date.now();
-const server = await serve();
-const BASE = `http://127.0.0.1:${server.address().port}`;
+// --live (npm run test:live) tests the real chess.pacificfish.ca, and SITE_URL any other deployed
+// copy, instead of serving site/ here. That's safe: everything the tests do stays in their own
+// throwaway browsers; the site stores nothing.
+const remote = process.env.SITE_URL || (process.argv.includes('--live') ? 'https://chess.pacificfish.ca' : null);
+const server = remote ? null : await serve();
+const BASE = remote ? remote.replace(/\/$/, '') : `http://127.0.0.1:${server.address().port}`;
+console.log(`Testing ${BASE}`);
 await Promise.all(Object.keys(DEVICES).map(onDevice));
-server.close();
+server?.close();
 console.log(`\n${passes} passed, ${fails} failed in ${Math.round((Date.now() - started) / 100) / 10}s`);
 process.exit(fails ? 1 : 0);
