@@ -227,6 +227,19 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   check(who, takenText === '+5 / ', 'you’re +5 and the promoted pawn isn’t counted as captured', JSON.stringify(takenText));
   await screenshot(page, `${SHOTS}${who}.png`);
 
+  // The board doesn't move when "Sign in" appears, even when the server's answer is slow (as over
+  // the internet): chessground would place taps by where the board was
+  const slow = await freshPage();
+  await slow.route('**/api/me', async r => { await new Promise(x => setTimeout(x, 1000)); await r.continue(); });
+  await slow.goto('/');
+  await slow.locator('#board cg-board piece').first().waitFor();
+  const boardTop = () => slow.evaluate(() => document.querySelector('#board').getBoundingClientRect().top);
+  const topBefore = await boardTop();
+  await slow.locator('#acc-open:not([hidden])').waitFor();
+  const topAfter = await boardTop();
+  check(who, topBefore === topAfter, 'the board stays put when Sign in appears late', `${topBefore} -> ${topAfter}`);
+  await slow.close();
+
   // The game review, on Fool's Mate (you as White, and losing): 1. f3 e5 2. g4?? Qh4#
   const rv = await freshPage();
   await rv.goto('/');
@@ -316,91 +329,97 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   check(who, await rv.locator('#review').isHidden() && await rv.locator('#evalbar').isHidden() && await rv.locator('.actions').isVisible(), 'Done leaves the review');
   await rv.close();
 
-  // Accounts: a guest's game, then an account made with a secret opening (the Italian Game), the
-  // game kept in it, and the account signed in to from another browser, where the game follows
-  const ITALIAN = 'e2e4 e7e5 g1f3 b8c6 f1c4';
-  const accText = (p, id) => p.locator(id).innerText();
-  const acc = await freshPage();
-  await acc.goto('/');
-  await acc.locator('#board cg-board piece').first().waitFor();
-  await move(acc, 'e2', 'e4', touch);
-  await waitMoves(acc, 2, 'Stockfish answering a guest');
-  const guestMoves = await acc.locator('#moves button').allInnerTexts();
-  await acc.locator('#acc-open').click();
-  await acc.locator('#account[open]').waitFor();
-  await acc.locator('#account [data-tab=signup]').click();
-  await acc.locator('#acc-name').fill(who);
-  await playOpening(acc, ITALIAN, touch);
-  check(who, (await accText(acc, '#acc-moves')) === '1. e4 e5 2. Nf3 Nc6 3. Bc4', 'the opening is shown as it’s played', await accText(acc, '#acc-moves'));
-  await acc.waitForFunction(() => document.querySelector('#acc-meter p').textContent.length > 0);
-  check(who, (await accText(acc, '#acc-go')) === 'Next: practice it', 'the button says Next: practice it', await accText(acc, '#acc-go'));
-  check(who, await acc.locator('#acc-meter').getAttribute('data-level') === 'weak' && /Italian/.test(await accText(acc, '#acc-meter p')),
-    'the meter calls the Italian Game weak, by name', await accText(acc, '#acc-meter p'));
-  await acc.locator('#acc-go').click();
-  check(who, /from memory \(1 of 2\)/.test(await accText(acc, '#acc-step')) && (await accText(acc, '#acc-moves')) === '0 moves played' && await acc.locator('#acc-meter').isHidden(),
-    'then it asks for it again from memory, without showing the moves');
-  await playOpening(acc, 'e2e4', touch);
-  check(who, (await accText(acc, '#acc-moves')) === '1 move played', 'practicing counts the moves but doesn’t name them');
-  await acc.locator('#acc-go').click();
-  check(who, /not the same/.test(await accText(acc, '#acc-error')), 'a different opening is caught', await accText(acc, '#acc-error'));
-  await playOpening(acc, ITALIAN, touch);
-  await acc.locator('#acc-go').click();
-  check(who, /\(2 of 2\)/.test(await accText(acc, '#acc-step')), 'the right one moves on to the second practice');
-  await playOpening(acc, ITALIAN, touch);
-  await acc.locator('#acc-go').click();
-  await acc.locator('#account').waitFor({ state: 'hidden' });
-  check(who, (await accText(acc, '#acc-who')) === who && await acc.locator('#acc-open').isHidden(), 'the account is made, and you’re signed in');
-  const inAccount = await acc.evaluate(async () => (await (await fetch('/api/game')).json()).data);
-  check(who, inAccount && guestMoves.every(m => inAccount.pgn.includes(m)) && inAccount.variant === 'chess', 'the guest’s game is now the account’s', inAccount && inAccount.pgn.slice(-30));
-  await acc.reload();
-  await acc.locator('#acc-who:not([hidden])').waitFor();
-  check(who, (await accText(acc, '#acc-who')) === who, 'still signed in after a reload');
+  // Accounts, here only: on the live site they would make real accounts every run (and then fail
+  // on names already taken, and use up the sign-ups an address may make in an hour)
+  if (remote) check(who, true, 'accounts skipped on the live site');
+  else {
+    // Accounts: a guest's game, then an account made with a secret opening (the Italian Game), the
+    // game kept in it, and the account signed in to from another browser, where the game follows
+    const ITALIAN = 'e2e4 e7e5 g1f3 b8c6 f1c4';
+    const accText = (p, id) => p.locator(id).innerText();
+    const acc = await freshPage();
+    await acc.goto('/');
+    await acc.locator('#board cg-board piece').first().waitFor();
+    await move(acc, 'e2', 'e4', touch);
+    await waitMoves(acc, 2, 'Stockfish answering a guest');
+    const guestMoves = await acc.locator('#moves button').allInnerTexts();
+    await acc.locator('#acc-open').click();
+    await acc.locator('#account[open]').waitFor();
+    await acc.locator('#account [data-tab=signup]').click();
+    await acc.locator('#acc-name').fill(who);
+    await playOpening(acc, ITALIAN, touch);
+    check(who, (await accText(acc, '#acc-moves')) === '1. e4 e5 2. Nf3 Nc6 3. Bc4', 'the opening is shown as it’s played', await accText(acc, '#acc-moves'));
+    await acc.waitForFunction(() => document.querySelector('#acc-meter p').textContent.length > 0);
+    check(who, (await accText(acc, '#acc-go')) === 'Next: practice it', 'the button says Next: practice it', await accText(acc, '#acc-go'));
+    check(who, await acc.locator('#acc-meter').getAttribute('data-level') === 'weak' && /Italian/.test(await accText(acc, '#acc-meter p')),
+      'the meter calls the Italian Game weak, by name', await accText(acc, '#acc-meter p'));
+    await acc.locator('#acc-go').click();
+    check(who, /from memory \(1 of 2\)/.test(await accText(acc, '#acc-step')) && (await accText(acc, '#acc-moves')) === '0 moves played' && await acc.locator('#acc-meter').isHidden(),
+      'then it asks for it again from memory, without showing the moves');
+    await playOpening(acc, 'e2e4', touch);
+    check(who, (await accText(acc, '#acc-moves')) === '1 move played', 'practicing counts the moves but doesn’t name them');
+    await acc.locator('#acc-go').click();
+    check(who, /not the same/.test(await accText(acc, '#acc-error')), 'a different opening is caught', await accText(acc, '#acc-error'));
+    await playOpening(acc, ITALIAN, touch);
+    await acc.locator('#acc-go').click();
+    check(who, /\(2 of 2\)/.test(await accText(acc, '#acc-step')), 'the right one moves on to the second practice');
+    await playOpening(acc, ITALIAN, touch);
+    await acc.locator('#acc-go').click();
+    await acc.locator('#account').waitFor({ state: 'hidden' });
+    check(who, (await accText(acc, '#acc-who')) === who && await acc.locator('#acc-open').isHidden(), 'the account is made, and you’re signed in');
+    const inAccount = await acc.evaluate(async () => (await (await fetch('/api/game')).json()).data);
+    check(who, inAccount && guestMoves.every(m => inAccount.pgn.includes(m)) && inAccount.variant === 'chess', 'the guest’s game is now the account’s', inAccount && inAccount.pgn.slice(-30));
+    await acc.reload();
+    await acc.locator('#acc-who:not([hidden])').waitFor();
+    check(who, (await accText(acc, '#acc-who')) === who, 'still signed in after a reload');
 
-  // Another browser: a wrong opening is refused, the right one brings the game
-  const other = await freshPage();
-  await other.goto('/');
-  await other.locator('#acc-open:not([hidden])').click();
-  await other.locator('#account[open]').waitFor();
-  await other.locator('#acc-name').fill(who.toLowerCase());
-  await playOpening(other, 'd2d4 d7d5', touch);
-  await other.locator('#acc-go').click();
-  await other.waitForFunction(() => document.querySelector('#acc-error').textContent.length > 0);
-  check(who, /don’t match/.test(await accText(other, '#acc-error')), 'a wrong opening doesn’t sign in', await accText(other, '#acc-error'));
-  await other.locator('#acc-clear').click();
-  await playOpening(other, ITALIAN, touch);
-  await other.locator('#acc-go').click();
-  await other.locator('#account').waitFor({ state: 'hidden' });
-  await other.waitForFunction(n => document.querySelectorAll('#moves button').length === n, guestMoves.length, { timeout: 10000 }).catch(() => {});
-  check(who, (await accText(other, '#acc-who')) === who && JSON.stringify(await other.locator('#moves button').allInnerTexts()) === JSON.stringify(guestMoves),
-    'signed in elsewhere (any capitals), the game follows', JSON.stringify(await other.locator('#moves button').allInnerTexts()));
-  // A move there reaches the account, and the first browser picks it up on its next visit
-  await move(other, 'g1', 'f3', touch);
-  await waitMoves(other, 4, 'Stockfish answering on the second browser');
-  // Wait until the account has both full moves, asking from here in a plain loop. (Not
-  // waitForFunction with an async function: its answer is a Promise, which counts as true at once,
-  // so the wait ended before the second browser had sent anything.) Moves are counted below the
-  // PGN's header, whose date (2026.11.06) would otherwise count too.
-  const accountPlies = () => other.evaluate(async () => {
-    const pgn = (await (await fetch('/api/game')).json()).data.pgn.replace(/\[[^\]]*\]\s*/g, '');
-    return pgn.trim().split(/\s+/).filter(t => !/^\d+\.$|^\*$/.test(t)).length;
-  });
-  for (let i = 0; i < 40 && (await accountPlies()) < 4; i++) await other.waitForTimeout(300);
-  await acc.reload();
-  await acc.waitForFunction(() => document.querySelectorAll('#moves button').length === 4, null, { timeout: 10000 }).catch(() => {});
-  check(who, (await acc.locator('#moves button').count()) === 4, 'a move on the other browser reaches the first', `${await acc.locator('#moves button').count()} moves`);
-  // Sign out asks first, in the site's own box: Cancel keeps you signed in
-  await other.locator('#acc-out').click();
-  const confirmOut = other.locator('#confirm[open]');
-  await confirmOut.waitFor();
-  check(who, /^Sign out\?/.test(await confirmOut.locator('#confirm-text').innerText()) && (await confirmOut.locator('#confirm-yes').innerText()) === 'Sign out', 'Sign out asks first');
-  await confirmOut.getByRole('button', { name: 'Cancel' }).click();
-  check(who, await other.locator('#acc-who').isVisible() && (await other.evaluate(async () => (await (await fetch('/api/me')).json()).name)) === who, 'and Cancel keeps you signed in');
-  await other.locator('#acc-out').click();
-  await confirmOut.getByRole('button', { name: 'Sign out' }).click();
-  await other.locator('#acc-open:not([hidden])').waitFor();
-  check(who, await other.locator('#acc-who').isHidden() && (await other.evaluate(async () => (await (await fetch('/api/me')).json()).name)) === null, 'Sign out signs out');
-  await acc.close();
-  await other.close();
+    // Another browser: a wrong opening is refused, the right one brings the game
+    const other = await freshPage();
+    await other.goto('/');
+    await other.locator('#acc-open:not([hidden])').click();
+    await other.locator('#account[open]').waitFor();
+    await other.locator('#acc-name').fill(who.toLowerCase());
+    await playOpening(other, 'd2d4 d7d5', touch);
+    await other.locator('#acc-go').click();
+    await other.waitForFunction(() => document.querySelector('#acc-error').textContent.length > 0);
+    check(who, /don’t match/.test(await accText(other, '#acc-error')), 'a wrong opening doesn’t sign in', await accText(other, '#acc-error'));
+    await other.locator('#acc-clear').click();
+    await playOpening(other, ITALIAN, touch);
+    await other.locator('#acc-go').click();
+    await other.locator('#account').waitFor({ state: 'hidden' });
+    await other.waitForFunction(n => document.querySelectorAll('#moves button').length === n, guestMoves.length, { timeout: 10000 }).catch(() => {});
+    check(who, (await accText(other, '#acc-who')) === who && JSON.stringify(await other.locator('#moves button').allInnerTexts()) === JSON.stringify(guestMoves),
+      'signed in elsewhere (any capitals), the game follows', JSON.stringify(await other.locator('#moves button').allInnerTexts()));
+    // A move there reaches the account, and the first browser picks it up on its next visit
+    await move(other, 'g1', 'f3', touch);
+    await waitMoves(other, 4, 'Stockfish answering on the second browser');
+    // Wait until the account has both full moves, asking from here in a plain loop. (Not
+    // waitForFunction with an async function: its answer is a Promise, which counts as true at once,
+    // so the wait ended before the second browser had sent anything.) Moves are counted below the
+    // PGN's header, whose date (2026.11.06) would otherwise count too.
+    const accountPlies = () => other.evaluate(async () => {
+      const pgn = (await (await fetch('/api/game')).json()).data.pgn.replace(/\[[^\]]*\]\s*/g, '');
+      return pgn.trim().split(/\s+/).filter(t => !/^\d+\.$|^\*$/.test(t)).length;
+    });
+    for (let i = 0; i < 40 && (await accountPlies()) < 4; i++) await other.waitForTimeout(300);
+    await acc.reload();
+    await acc.waitForFunction(() => document.querySelectorAll('#moves button').length === 4, null, { timeout: 10000 }).catch(() => {});
+    check(who, (await acc.locator('#moves button').count()) === 4, 'a move on the other browser reaches the first', `${await acc.locator('#moves button').count()} moves`);
+    // Sign out asks first, in the site's own box: Cancel keeps you signed in
+    await other.locator('#acc-out').click();
+    const confirmOut = other.locator('#confirm[open]');
+    await confirmOut.waitFor();
+    check(who, /^Sign out\?/.test(await confirmOut.locator('#confirm-text').innerText()) && (await confirmOut.locator('#confirm-yes').innerText()) === 'Sign out', 'Sign out asks first');
+    await confirmOut.getByRole('button', { name: 'Cancel' }).click();
+    check(who, await other.locator('#acc-who').isVisible() && (await other.evaluate(async () => (await (await fetch('/api/me')).json()).name)) === who, 'and Cancel keeps you signed in');
+    await other.locator('#acc-out').click();
+    await confirmOut.getByRole('button', { name: 'Sign out' }).click();
+    await other.locator('#acc-open:not([hidden])').waitFor();
+    check(who, await other.locator('#acc-who').isHidden() && (await other.evaluate(async () => (await (await fetch('/api/me')).json()).name)) === null, 'Sign out signs out');
+    await acc.close();
+    await other.close();
+
+  }
 
   // When Stockfish can't work, say so instead of "thinking" forever. Each case in a fresh browser.
   // Its loader missing: the worker reports an error straight away.
