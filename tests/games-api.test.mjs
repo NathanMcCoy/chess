@@ -24,10 +24,10 @@ const get = async (path, headers = {}) => { const res = await fetch(base + path,
 const TIMES = { w: { minutes: 5, increment: 3 }, b: { minutes: 5, increment: 3 } };
 
 // Reads a Server-Sent Events stream: next() resolves with the next "game" event's data
-function stream(id) {
+function stream(id, { path = `/api/games/${id}/events`, event = 'game' } = {}) {
   const ctrl = new AbortController();
   const queue = [], waiting = [];
-  const ready = fetch(`${base}/api/games/${id}/events`, { signal: ctrl.signal }).then(async res => {
+  const ready = fetch(`${base}${path}`, { signal: ctrl.signal }).then(async res => {
     const reader = res.body.getReader(), dec = new TextDecoder();
     let buf = '';
     (async () => {
@@ -40,7 +40,7 @@ function stream(id) {
           while ((i = buf.indexOf('\n\n')) >= 0) {
             const block = buf.slice(0, i); buf = buf.slice(i + 2);
             const data = block.split('\n').filter(l => l.startsWith('data: ')).map(l => l.slice(6)).join('\n');
-            if (/^event: game$/m.test(block) && data) { const g = JSON.parse(data); waiting.length ? waiting.shift()(g) : queue.push(g); }
+            if (new RegExp(`^event: ${event}$`, 'm').test(block) && data) { const g = JSON.parse(data); waiting.length ? waiting.shift()(g) : queue.push(g); }
           }
         }
       } catch { /* closed */ }
@@ -117,4 +117,52 @@ test('thirty new games an hour from one address', async () => {
   const headers = { 'CF-Connecting-IP': '10.9.9.9' };
   for (let i = 0; i < 30; i++) assert.equal((await post('/api/games', { color: 'w', times: TIMES }, headers)).status, 201);
   assert.equal((await post('/api/games', { color: 'w', times: TIMES }, headers)).status, 429);
+});
+
+test('Live games: a listed game shows while its maker’s page is open, and moves along when joined', async () => {
+  const lobby = stream(null, { path: '/api/lobby/events', event: 'lobby' });
+  await lobby.ready;
+  const first = await lobby.next();
+  const mine = g => g.id === made.body.id;
+  const made = await post('/api/games', { color: 'w', times: TIMES, listed: true });
+  assert.equal(made.status, 201);
+  assert.ok(!first.open.some(mine));
+  // Listed, but the maker's page isn't following it yet: not shown
+  assert.ok(!(await get('/api/lobby')).body.open.some(mine), 'not until the maker’s page is open');
+  const maker = stream(made.body.id);
+  await maker.ready;
+  let l;
+  do { l = await lobby.next(); } while (!l.open.some(mine));
+  assert.equal(l.open.find(mine).side, 'b', 'shown, live, with the side you’d get');
+  // Someone joins from the list: it moves to the games being played
+  await post(`/api/games/${made.body.id}/join`, {});
+  do { l = await lobby.next(); } while (!l.live.some(mine));
+  assert.ok(!l.open.some(mine) && l.live.find(mine).moves === 0);
+  maker.close();
+  lobby.close();
+});
+
+test('Live games: when the maker closes their page, their waiting game drops off the list', async () => {
+  const made = await post('/api/games', { color: 'b', times: TIMES, listed: true });
+  const maker = stream(made.body.id);
+  await maker.ready;
+  await maker.next();
+  await new Promise(r => setTimeout(r, 100));
+  assert.ok((await get('/api/lobby')).body.open.some(g => g.id === made.body.id), 'listed while the page is open');
+  maker.close();
+  let gone = false;
+  for (let i = 0; i < 20 && !gone; i++) { await new Promise(r => setTimeout(r, 100)); gone = !(await get('/api/lobby')).body.open.some(g => g.id === made.body.id); }
+  assert.ok(gone, 'gone once it closes');
+  assert.equal((await get(`/api/games/${made.body.id}`)).body.status, 'waiting', 'but the game itself still works by its link');
+});
+
+test('a game made without listing is never in Live games', async () => {
+  const made = await post('/api/games', { color: 'w', times: TIMES });
+  const maker = stream(made.body.id);
+  await maker.ready;
+  await maker.next();
+  await new Promise(r => setTimeout(r, 100));
+  const { open } = (await get('/api/lobby')).body;
+  assert.ok(!open.some(g => g.id === made.body.id));
+  maker.close();
 });

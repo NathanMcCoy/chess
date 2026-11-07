@@ -194,3 +194,42 @@ test('a flag that fell while the server was down is seen when it starts again', 
   all.push(again);
   assert.deepEqual(again.get(id).result, { winner: 'w', reason: 'time' });
 });
+
+// Live games: what the list shows
+test('the list shows listed games only, while their maker is here, for an hour', async () => {
+  const { db, games, clock } = setup();
+  const acc = await signUp(db, 'Maker', { variant: 'chess', moves: ['e2e4'] });
+  const listed = games.create({ color: 'w', times: TEN_FIVE, account: acc, listed: true });
+  const guestGame = games.create({ color: 'b', times: { w: { minutes: 3, increment: 2 }, b: { minutes: 10, increment: 5 } }, listed: true });
+  games.create({ color: 'w', times: TEN_FIVE });   // by link only: never listed
+  let { open, live } = games.lobby(() => true);
+  assert.deepEqual(open.map(g => g.id).sort(), [listed.id, guestGame.id].sort());
+  assert.deepEqual(live, []);
+  const byName = open.find(g => g.id === listed.id), byGuest = open.find(g => g.id === guestGame.id);
+  assert.deepEqual([byName.by, byName.side], ['Maker', 'b'], 'who made it, and the side you’d get');
+  assert.deepEqual([byGuest.by, byGuest.side], ['Guest', 'w']);
+  assert.deepEqual(byGuest.times, { w: { base: 180_000, inc: 2000 }, b: { base: 600_000, inc: 5000 } });
+  assert.ok(!JSON.stringify(games.lobby(() => true)).includes(listed.seat), 'no seat keys');
+  assert.deepEqual(games.lobby(id => id === listed.id).open.map(g => g.id), [listed.id], 'a maker who has gone isn’t listed');
+  clock.t += 3_600_001;
+  assert.deepEqual(games.lobby(() => true).open, [], 'not after an hour');
+});
+
+test('a joined listed game moves from open to being played, and leaves when it ends or goes quiet', () => {
+  const { games, clock } = setup();
+  const made = games.create({ color: 'w', times: TEN_FIVE, listed: true });
+  const j = games.join(made.id, null);
+  let { open, live } = games.lobby(() => true);
+  assert.deepEqual(open, []);
+  assert.deepEqual(live.map(g => [g.id, g.players.w, g.players.b, g.moves, g.turn]), [[made.id, 'Guest', 'Guest', 0, 'w']]);
+  games.move(made.id, made.seat, null, 'e2e4');
+  assert.equal(games.lobby().live[0].moves, 1);
+  assert.equal(games.lobby().live[0].turn, 'b');
+  clock.t += 1_800_001;
+  assert.deepEqual(games.lobby().live, [], 'not when nobody has moved for half an hour');
+  const again = games.create({ color: 'w', times: TEN_FIVE, listed: true });
+  const j2 = games.join(again.id, null);
+  games.resign(again.id, j2.seat, null);
+  assert.deepEqual(games.lobby().live, [], 'nor once it’s over');
+  assert.ok(j);
+});

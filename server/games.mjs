@@ -123,7 +123,8 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
   return {
     get(id, seat, account) { const g = load(id); return view(g, seatOf(g, seat, account)); },
 
-    create({ variant: variantId = 'chess', color = 'random', times, account = null }) {
+    // listed: shown in Live games, for anyone to join (and, once playing, to watch)
+    create({ variant: variantId = 'chess', color = 'random', times, account = null, listed = false }) {
       const v = variant(variantId);
       if (!v) throw new GameError(400, 'That isn’t a game this site plays.');
       if (!['w', 'b', 'random'].includes(color)) throw new GameError(400, 'Choose White, Black or random.');
@@ -132,9 +133,9 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
       const id = randomBytes(9).toString('base64url');   // 12 characters: not guessable
       const seat = randomBytes(24).toString('base64url');
       const t = now();
-      db.prepare(`INSERT INTO games (id, variant, start, status, ${side}_seat, ${side}_account, w_base, w_inc, b_base, b_inc, w_left, b_left, created, updated)
-                  VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, v.id, v.start(), hash(seat), account ? account.id : null, tc.w.base, tc.w.inc, tc.b.base, tc.b.inc, tc.w.base, tc.b.base, t, t);
+      db.prepare(`INSERT INTO games (id, variant, start, status, ${side}_seat, ${side}_account, w_base, w_inc, b_base, b_inc, w_left, b_left, created, updated, listed)
+                  VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, v.id, v.start(), hash(seat), account ? account.id : null, tc.w.base, tc.w.inc, tc.b.base, tc.b.inc, tc.w.base, tc.b.base, t, t, listed ? 1 : 0);
       changed(id);
       return { id, seat, color: side };
     },
@@ -208,6 +209,27 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
       }
       save(g, { status: 'aborted', result: { winner: null, reason: 'aborted' }, turn_started: null, draw_offer: null });
       return view(g, c);
+    },
+
+    // Live games: listed games waiting for an opponent, and listed games being played. A waiting
+    // game shows only while its maker's page is still open (present(id): the server knows, as that
+    // page holds the game's live stream), so nobody joins a game whose maker has gone; and only for
+    // an hour. A game being played shows while there's been a move or more in the last half hour.
+    lobby(present = () => true) {
+      const t = now();
+      const name = id => nameOf(id) || 'Guest';
+      const times = g => Object.fromEntries(COLOURS.map(c => [c, { base: g[`${c}_base`], inc: g[`${c}_inc`] }]));
+      const open = db.prepare("SELECT * FROM games WHERE status = 'waiting' AND listed = 1 AND created > ? ORDER BY created DESC LIMIT 100")
+        .all(t - 3_600_000).filter(g => present(g.id)).slice(0, 50).map(g => {
+          const maker = g.w_seat || g.w_account != null ? 'w' : 'b';
+          return { id: g.id, variant: g.variant, by: name(g[`${maker}_account`]), side: other(maker), times: times(g), created: g.created };
+        });
+      const live = db.prepare("SELECT * FROM games WHERE status = 'playing' AND listed = 1 AND updated > ? ORDER BY updated DESC LIMIT 50")
+        .all(t - 1_800_000).map(g => {
+          const moves = JSON.parse(g.moves);
+          return { id: g.id, variant: g.variant, players: { w: name(g.w_account), b: name(g.b_account) }, times: times(g), moves: moves.length, turn: turnOf({ ...g, moves }) };
+        });
+      return { open, live, serverNow: t };
     },
 
     flag,

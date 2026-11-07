@@ -50,6 +50,8 @@ const STEPS = [
      updated INTEGER NOT NULL
    );
    CREATE INDEX games_status ON games(status);`,
+  // 3: games listed in Live games (open to anyone to join, and shown to watch); the rest are by link only
+  `ALTER TABLE games ADD COLUMN listed INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 export function openDb(dir) {
