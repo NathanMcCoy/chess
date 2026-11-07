@@ -3,14 +3,15 @@
 // rated by how much of the mover's win chance it gave away.
 
 // The ratings, best first. `loss` is the most win chance (in percentage points) a move may give
-// away and still get the rating; "best" means the engine's own first choice.
+// away and still get the rating; "best" means the engine's own first choice. `symbol` is the
+// standard chess annotation written after the move (g4??); `badge` is what its little badge shows.
 export const RATINGS = [
-  { id: 'best', label: 'Best', symbol: '', loss: 0 },
-  { id: 'excellent', label: 'Excellent', symbol: '', loss: 3 },
-  { id: 'good', label: 'Good', symbol: '', loss: 10 },
-  { id: 'inaccuracy', label: 'Inaccuracy', symbol: '?!', loss: 20 },
-  { id: 'mistake', label: 'Mistake', symbol: '?', loss: 30 },
-  { id: 'blunder', label: 'Blunder', symbol: '??', loss: Infinity },
+  { id: 'best', label: 'Best', symbol: '', badge: '★', loss: 0 },
+  { id: 'excellent', label: 'Excellent', symbol: '', badge: '!', loss: 3 },
+  { id: 'good', label: 'Good', symbol: '', badge: '✓', loss: 10 },
+  { id: 'inaccuracy', label: 'Inaccuracy', symbol: '?!', badge: '?!', loss: 20 },
+  { id: 'mistake', label: 'Mistake', symbol: '?', badge: '?', loss: 30 },
+  { id: 'blunder', label: 'Blunder', symbol: '??', badge: '??', loss: Infinity },
 ];
 export const RATING = Object.fromEntries(RATINGS.map(r => [r.id, r]));
 

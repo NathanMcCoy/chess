@@ -128,8 +128,12 @@ function renderMoves(moves, shown) {
     const r = ratingOf(i, moves);
     if (r) {
       b.dataset.rating = r.rating;
-      if (RATING[r.rating].symbol) b.dataset.symbol = RATING[r.rating].symbol;
       b.title = RATING[r.rating].label;
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = RATING[r.rating].badge;
+      badge.setAttribute('aria-label', RATING[r.rating].label);
+      b.prepend(badge);
     }
     row.append(b);
     if (m.color === 'b') { number++; row = null; }
@@ -440,6 +444,10 @@ function renderReview(moves, shown) {
     line.textContent = [r.rating !== 'best' && before.best ? `Best was ${san(fens[shown - 1], before.best)}.` : '', evalNow].filter(Boolean).join(' ');
     verdict.append(head, line);
     if (r.rating !== 'best' && before.best) shapes.push({ orig: before.best.slice(0, 2), dest: before.best.slice(2, 4), brush: 'green' });
+    // The move's badge on the corner of the square it landed on (drawn by chessground in a
+    // 100 × 100 box over the square; colours come from the stylesheet, as the security policy
+    // allows no inline styles)
+    shapes.push({ orig: m.to, customSvg: { html: `<g class="sq-badge" data-rating="${r.rating}"><circle cx="82" cy="18" r="17"/><text x="82" y="19">${RATING[r.rating].badge}</text></g>` } });
   }
   board.setAutoShapes(shapes);
 

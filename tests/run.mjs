@@ -219,10 +219,23 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   check(who, await rv.locator('#review').isVisible() && await rv.locator('#evalbar').isVisible() && await rv.locator('.actions').isHidden(),
     'Review this game opens the review, with the evaluation bar');
   await rv.locator('#rv-progress').waitFor({ state: 'hidden', timeout: 30000 });
-  const ratings = await rv.locator('#moves button').evaluateAll(bs => bs.map(b => `${b.textContent}:${b.dataset.rating}${b.dataset.symbol || ''}`));
-  check(who, ratings.length === 4 && ratings.every(r => !r.endsWith(':undefined')), 'every move gets a rating', ratings.join(' '));
-  check(who, ratings[2] === 'g4:blunder??' && ratings[3] === 'Qh4#:best', 'g4 is a blunder and Qh4# the best move', ratings.join(' '));
+  // Each move as "move:rating:badge", the badge read on its own
+  const ratings = await rv.locator('#moves button').evaluateAll(bs => bs.map(b => {
+    const badge = b.querySelector('.badge');
+    return `${b.textContent.slice(badge ? badge.textContent.length : 0)}:${b.dataset.rating}:${badge ? badge.textContent : ''}`;
+  }));
+  check(who, ratings.length === 4 && ratings.every(r => !/:undefined:|:$/.test(r)), 'every move gets a rating and a badge', ratings.join(' '));
+  check(who, ratings[2] === 'g4:blunder:??' && ratings[3] === 'Qh4#:best:★', 'g4 is a blunder (??) and Qh4# the best move (★)', ratings.join(' '));
   await rv.locator('#moves button[data-ply="3"]').click();
+  // The move's badge on the board: on g4, in the square's top-right corner
+  const sqBadge = rv.locator('svg.cg-custom-svgs .sq-badge');
+  await sqBadge.first().waitFor({ state: 'attached', timeout: 2000 }).catch(() => {});
+  const g4 = await square(rv, 'g4');
+  const bb = await sqBadge.first().locator('circle').boundingBox().catch(() => null);
+  const size = (await rv.locator('cg-board').boundingBox()).width / 8;
+  const inCorner = bb && bb.x > g4.x && bb.x + bb.width <= g4.x + size / 2 + 1 && bb.y >= g4.y - size / 2 - 1 && bb.y + bb.height < g4.y;
+  check(who, await sqBadge.count() === 1 && await sqBadge.first().getAttribute('data-rating') === 'blunder' && inCorner,
+    'the board shows a blunder badge in the corner of g4', bb ? `badge at ${Math.round(bb.x - g4.x)},${Math.round(bb.y - g4.y)} from the centre, ${Math.round(bb.width)} px` : 'no badge');
   const verdict = await rv.locator('#rv-verdict').innerText();
   check(who, /^Your g4\?\? was a blunder\.\s*Best was \S+\. Evaluation .*M1\.$/.test(verdict), 'it says what g4 was, what was best and that it allows mate', JSON.stringify(verdict));
   // Drawn on the next screen refresh, like the check highlight. "attached", not "visible": a straight
@@ -240,6 +253,7 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   check(who, await rv.locator('#rv-graph polygon').count() === 1 && await rv.locator('#rv-graph .mark[data-rating="blunder"]').count() === 1, 'the graph draws the game with the blunder marked');
   const wide = await rv.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(who, wide <= 0, 'the bar fits beside the board without widening the page', `${wide}px over`);
+  await rv.waitForTimeout(400);   // let pieces finish sliding (0.18 s) and the bar settle (0.3 s), so the picture shows the final position
   await screenshot(rv, `${SHOTS}${who}-review.png`);
   // Saved: a reload keeps the analysis, so reviewing again is instant
   await rv.reload();

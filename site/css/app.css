@@ -202,12 +202,16 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .actions #review-game[hidden] { display: none; }
 body.reviewing .actions, body.reviewing .hint { display: none; }
 
-/* Ratings in the move list: a coloured dot, and ?!, ? or ?? on the poor ones */
-.moves button[data-rating]::before {
-  content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%;
-  margin-right: 5px; vertical-align: 1px; background: var(--rc);
+/* Ratings in the move list: a little round badge before the move (★ ! ✓ ?! ? ??) */
+.moves .badge {
+  display: inline-grid; place-items: center; min-width: 17px; height: 17px; padding: 0 3px;
+  margin-right: 5px; border-radius: 9px; vertical-align: 1px;
+  background: var(--rc); color: var(--bg); font-size: 10px; font-weight: 900; line-height: 1;
 }
-.moves button[data-symbol]::after { content: attr(data-symbol); color: var(--rc); margin-left: 2px; font-weight: 800; }
+.moves button.current .badge { box-shadow: 0 0 0 2px var(--accent-text); }
+/* The same badge on the board, on the square the move landed on */
+.sq-badge circle { fill: var(--rc); stroke: #0b1f2b; stroke-width: 3; }
+.sq-badge text { fill: #0b1f2b; font: 900 19px system-ui, sans-serif; text-anchor: middle; dominant-baseline: middle; }
 [data-rating="best"] { --rc: var(--r-best); }
 [data-rating="excellent"] { --rc: var(--r-excellent); }
 [data-rating="good"] { --rc: var(--r-good); }
