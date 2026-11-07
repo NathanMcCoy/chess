@@ -119,6 +119,7 @@
         <button type="button" id="review-game">Review game</button>
         <button type="button" id="new-game" class="primary">New game</button>
         <button type="button" id="play-friend">Play a friend</button>
+        <button type="button" id="live-games">Live games</button>
         <button type="button" id="undo">Take back</button>
         <button type="button" id="flip">Flip board</button>
         <button type="button" id="resign">Resign</button>
@@ -172,12 +173,23 @@
           <label>+ <input id="fr-b-inc" type="number" min="0" max="180" step="1" value="5"> s a move</label></div>
         <label class="fr-same"><input type="checkbox" id="fr-same" checked> The same time for both</label>
       </div>
+      <label class="fr-same fr-listed"><input type="checkbox" id="fr-listed"> List it in Live games, so anyone can join</label>
       <p id="fr-error" class="acc-error" role="alert"></p>
       <div class="row">
         <button type="submit" value="cancel">Cancel</button>
         <button type="submit" value="create" class="primary">Make the link</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="lobby" class="box lobby" aria-labelledby="lobby-title">
+    <div class="lobby-head"><h2 id="lobby-title">Live games</h2><button type="button" id="lobby-close">Close</button></div>
+    <h3>Waiting for an opponent</h3>
+    <ul id="lobby-open" class="lobby-list"></ul>
+    <p id="lobby-open-none" class="lobby-none">No open games right now. Make one with Play a friend, and tick “List it in Live games”.</p>
+    <h3>Being played</h3>
+    <ul id="lobby-live" class="lobby-list"></ul>
+    <p id="lobby-live-none" class="lobby-none">Nobody’s playing a listed game right now.</p>
   </dialog>
 
   <dialog id="confirm" class="box">

@@ -500,6 +500,56 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     for (const p of [host, guest, watcher]) await p.close();
   }
 
+  // Live games: a listed game is found and joined from the list by a stranger, then watched from the
+  // list by a third person. The devices share one test server, so each finds its own game by id.
+  if (remote) check(who, true, 'Live games skipped on the live site');
+  else {
+    const maker = await freshPage();
+    await maker.goto('/');
+    await maker.locator('#board cg-board piece').first().waitFor();
+    await maker.locator('#play-friend').click();
+    const fd = maker.locator('#friend-dialog[open]');
+    await fd.waitFor();
+    await fd.locator('[data-preset="5+3"]').click();
+    await fd.locator('input[name=fr-side][value=w]').check();
+    await fd.locator('#fr-listed').check();
+    await fd.getByRole('button', { name: 'Make the link' }).click();
+    await maker.locator('#ob-link-row:not([hidden])').waitFor();
+    const id = new URL(maker.url()).searchParams.get('g');
+    check(who, /^Waiting for an opponent: your game is in Live games/.test(await status(maker)), 'a listed game says it’s in Live games', await status(maker));
+
+    const seeker = await freshPage();
+    await seeker.goto('/');
+    await seeker.locator('#live-games').click();
+    const mineOpen = seeker.locator(`#lobby[open] #lobby-open li[data-id="${id}"]`);
+    await mineOpen.waitFor();
+    check(who, (await mineOpen.innerText()).replace(/\s+/g, ' ').trim() === 'Guest You’d play Black · 5+3 each Play', 'Live games lists it, with the side and times', (await mineOpen.innerText()).replace(/\s+/g, ' '));
+    await mineOpen.getByRole('button', { name: 'Play' }).click();
+    await seeker.waitForFunction(() => document.querySelector('#status').textContent === 'Your opponent’s move.');
+    check(who, await seeker.locator('#confirm[open]').count() === 0 && await seeker.locator('#board.orientation-black').count() === 1, 'Play joins straight away, as Black');
+    await maker.waitForFunction(() => document.querySelector('#status').textContent === 'Your move.');
+    check(who, (await maker.locator('#top-player .name').innerText()) === 'Your opponent', 'a stranger is called your opponent, not your friend');
+    await move(maker, 'e2', 'e4', touch);
+    await seeker.waitForFunction(() => document.querySelectorAll('#moves button').length === 1);
+    check(who, true, 'and they play');
+
+    // A third person finds it under Being played, and watches
+    const viewer = await freshPage();
+    await viewer.goto('/');
+    await viewer.locator('#live-games').click();
+    const mineLive = viewer.locator(`#lobby[open] #lobby-live li[data-id="${id}"]`);
+    await mineLive.waitFor();
+    check(who, /^Guest vs Guest 5\+3 each · 1 move, Black to move Watch$/.test((await mineLive.innerText()).replace(/\s+/g, ' ').trim()) && await viewer.locator(`#lobby-open li[data-id="${id}"]`).count() === 0,
+      'it moves from waiting to being played', (await mineLive.innerText()).replace(/\s+/g, ' '));
+    await mineLive.getByRole('button', { name: 'Watch' }).click();
+    await viewer.waitForFunction(() => document.querySelectorAll('#moves button').length === 1);
+    check(who, (await status(viewer)) === 'Black to move.' && await viewer.locator('#ob-draw').isHidden(), 'Watch shows it live, with nothing to play', await status(viewer));
+    await move(seeker, 'e7', 'e5', touch);
+    await viewer.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
+    check(who, true, 'the watcher sees the next move arrive');
+    for (const p of [maker, seeker, viewer]) await p.close();
+  }
+
   // When Stockfish can't work, say so instead of "thinking" forever. Each case in a fresh browser.
   // Its loader missing: the worker reports an error straight away.
   const noLoader = await freshPage();
