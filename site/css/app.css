@@ -38,7 +38,11 @@ body {
 button { font: inherit; color: inherit; }
 
 .top { padding: 12px 16px; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-.account-bar { display: flex; align-items: center; gap: 8px; }
+/* The bar keeps a button's height from the start: "Sign in" only appears once the server has said
+   you're signed out, and over the internet that's after the board is drawn. Without the room kept,
+   the header grew 8 px then and moved the board under chessground, which places taps by where the
+   board was (found by the live tests, Nov 6) */
+.account-bar { display: flex; align-items: center; gap: 8px; min-height: calc(1.45em + 14px); }
 .account-bar button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; cursor: pointer; }
 .account-bar button[hidden] { display: none; }
 .acc-who { font-weight: 700; color: var(--accent); }
