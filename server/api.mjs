@@ -6,7 +6,8 @@
 //   GET  /api/game                                            -> { data, updated } (data null if none)
 //   PUT  /api/game     { data }                               -> { updated }
 // Games by challenge link (games.mjs). A seat key comes in the body, or the X-Seat header for GETs:
-//   POST /api/games    { variant, color, times }              -> 201 { id, seat, color }
+//   POST /api/games    { variant, color, times, listed }      -> 201 { id, seat, color }  (listed: in Live games)
+//   GET  /api/lobby, and /api/lobby/events (SSE)                -> { open, live }: Live games
 //   GET  /api/games/ID                                        -> the game ("you": your side, if any)
 //   GET  /api/games/ID/events                                 -> the game, then again on every change (SSE)
 //   POST /api/games/ID/join                                   -> { seat, color }
@@ -74,22 +75,52 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
   const watchers = new Map();   // game id -> the responses watching it
   const games = db ? makeGames(db, { now, changed: id => tell(id) }) : null;
   function tell(id) {
+    lobbyChanged();
     const open = watchers.get(id);
     if (!open || !open.size) return;
     let data;
     try { data = JSON.stringify(games.get(id)); } catch { return; }
     for (const res of open) res.write(`event: game\ndata: ${data}\n\n`);
   }
-  const beat = setInterval(() => { for (const open of watchers.values()) for (const res of open) res.write(': still here\n\n'); }, 25_000);
-  beat.unref?.();
+  const STREAM_HEAD = { ...HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' };
   function watch(req, res, id) {
     const first = JSON.stringify(games.get(id));   // a 404 here, before the stream starts, if there's no such game
-    res.writeHead(200, { ...HEADERS, 'Content-Type': 'text/event-stream; charset=utf-8', 'Cache-Control': 'no-cache, no-transform', 'X-Accel-Buffering': 'no' });
+    res.writeHead(200, STREAM_HEAD);
     res.write(`retry: 3000\nevent: game\ndata: ${first}\n\n`);
     if (!watchers.has(id)) watchers.set(id, new Set());
     watchers.get(id).add(res);
-    req.on('close', () => { const open = watchers.get(id); open?.delete(res); if (open && !open.size) watchers.delete(id); });
+    lobbyChanged();   // a waiting game's maker is here: it can be listed
+    req.on('close', () => {
+      const open = watchers.get(id);
+      open?.delete(res);
+      if (open && !open.size) watchers.delete(id);
+      lobbyChanged();   // and when they've gone, it can't
+    });
   }
+
+  // Live games: the list, to everyone who has it open, again on every change, at most twice a second
+  const lobbyWatchers = new Set();
+  const present = id => (watchers.get(id)?.size || 0) > 0;
+  let lobbyTimer = null;
+  function lobbyChanged() {
+    if (!lobbyWatchers.size || lobbyTimer) return;
+    lobbyTimer = setTimeout(() => {
+      lobbyTimer = null;
+      const data = JSON.stringify(games.lobby(present));
+      for (const res of lobbyWatchers) res.write(`event: lobby\ndata: ${data}\n\n`);
+    }, 500);
+    lobbyTimer.unref?.();
+  }
+  function watchLobby(req, res) {
+    res.writeHead(200, STREAM_HEAD);
+    res.write(`retry: 3000\nevent: lobby\ndata: ${JSON.stringify(games.lobby(present))}\n\n`);
+    lobbyWatchers.add(res);
+    req.on('close', () => lobbyWatchers.delete(res));
+  }
+  const beat = setInterval(() => {
+    for (const res of [...[...watchers.values()].flatMap(open => [...open]), ...lobbyWatchers]) res.write(': still here\n\n');
+  }, 25_000);
+  beat.unref?.();
   const who = req => req.headers['cf-connecting-ip'] || req.socket.remoteAddress || '?';
 
   async function api(req, res, path) {
@@ -142,13 +173,15 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
           return reply(res, 200, { updated });
         }
       }
+      if (path === '/api/lobby' && req.method === 'GET') return reply(res, 200, games.lobby(present));
+      if (path === '/api/lobby/events' && req.method === 'GET') return watchLobby(req, res);
       const g = path.match(/^\/api\/games(?:\/([\w-]{1,20})(?:\/(events|join|move|resign|draw|decline|abort))?)?$/);
       if (g) {
         const [, id, action] = g;
         if (!id && req.method === 'POST') {
           if (!limits.games.take(who(req), now())) throw new AccountError(429, 'Too many new games from here. Try again later.');
           const body = await readJson(req);
-          return reply(res, 201, games.create({ variant: body.variant, color: body.color, times: body.times, account: me }));
+          return reply(res, 201, games.create({ variant: body.variant, color: body.color, times: body.times, account: me, listed: body.listed === true }));
         }
         if (id && !action && req.method === 'GET') return reply(res, 200, games.get(id, req.headers['x-seat'], me));
         if (id && action === 'events' && req.method === 'GET') return watch(req, res, id);
@@ -167,6 +200,11 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
       return reply(res, 500, { error: 'Something went wrong on the server.' });
     }
   }
-  api.stop = () => { clearInterval(beat); games?.stop(); for (const open of watchers.values()) for (const res of open) res.end(); watchers.clear(); };
+  api.stop = () => {
+    clearInterval(beat); clearTimeout(lobbyTimer); games?.stop();
+    for (const open of watchers.values()) for (const res of open) res.end();
+    for (const res of lobbyWatchers) res.end();
+    watchers.clear(); lobbyWatchers.clear();
+  };
   return api;
 }
