@@ -91,12 +91,54 @@ export function askForGame() {
       if (box.returnValue !== 'create') return resolve(null);
       const num = id => Number(field(id).value);
       resolve({
+        listed: $('fr-listed').checked,
         color: box.querySelector('input[name=fr-side]:checked').value,
         times: { w: { minutes: num('fr-w-min'), increment: num('fr-w-inc') }, b: { minutes: num('fr-b-min'), increment: num('fr-b-inc') } },
       });
     }, { once: true });
     box.showModal();
   });
+}
+
+// Both sides' times: "10+5 each", or "White 3+2, Black 10+5"
+const bothTimes = t => (timeText(t.w) === timeText(t.b) ? `${timeText(t.w)} each` : `White ${timeText(t.w)}, Black ${timeText(t.b)}`);
+const SIDE = { w: 'White', b: 'Black' };
+
+// The Live games box: open games (Play) and games being played (Watch), kept up to date from the
+// server's live list while it's open. onPick(id, how) is called with 'play' or 'watch'.
+export function openLobby(onPick) {
+  const box = $('lobby');
+  const row = (id, who, detail, label, pick) => {
+    const li = document.createElement('li');
+    li.dataset.id = id;
+    const what = document.createElement('div');
+    what.className = 'lg-what';
+    const a = document.createElement('div'); a.className = 'lg-who'; a.textContent = who;
+    const b = document.createElement('div'); b.className = 'lg-detail'; b.textContent = detail;
+    what.append(a, b);
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+    button.className = label === 'Play' ? 'primary' : '';
+    button.onclick = pick;
+    li.append(what, button);
+    return li;
+  };
+  const show = ({ open, live }) => {
+    $('lobby-open').replaceChildren(...open.map(g => row(g.id, g.by, `You’d play ${SIDE[g.side]} · ${bothTimes(g.times)}`, 'Play', () => done(g.id, 'play'))));
+    $('lobby-live').replaceChildren(...live.map(g => row(g.id, `${g.players.w} vs ${g.players.b}`,
+      `${bothTimes(g.times)} · ${g.moves} move${g.moves === 1 ? '' : 's'}, ${SIDE[g.turn]} to move`, 'Watch', () => done(g.id, 'watch'))));
+    $('lobby-open-none').hidden = open.length > 0;
+    $('lobby-live-none').hidden = live.length > 0;
+  };
+  const es = new EventSource('/api/lobby/events');
+  es.addEventListener('lobby', e => { try { show(JSON.parse(e.data)); } catch { /* the next one fixes it */ } });
+  let picked = null;
+  const done = (id, how) => { picked = { id, how }; box.close(); };
+  $('lobby-close').onclick = () => box.close();
+  box.addEventListener('close', () => { es.close(); if (picked) onPick(picked.id, picked.how); }, { once: true });
+  show({ open: [], live: [] });
+  box.showModal();
 }
 
 export async function createGame(settings) {

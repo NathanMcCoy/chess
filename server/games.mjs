@@ -105,6 +105,7 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
     const turn = turnOf(g);
     return {
       id: g.id, variant: g.variant, start: g.start, moves: g.moves, status: g.status, result: g.result,
+      listed: !!g.listed,   // in Live games (open to anyone), or by link only
       drawOffer: g.draw_offer, turn,
       players: Object.fromEntries(COLOURS.map(c => [c, { name: nameOf(g[`${c}_account`]), joined: !!g[`${c}_seat`] || g[`${c}_account`] != null }])),
       times: Object.fromEntries(COLOURS.map(c => [c, { base: g[`${c}_base`], inc: g[`${c}_inc`] }])),

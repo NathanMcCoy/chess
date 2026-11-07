@@ -5,7 +5,7 @@ import { Chessground } from '../vendor/chessground.js';
 import { Engine, LEVELS } from './engine.js';
 import { RATING, RATINGS, rate, accuracy, whiteChance, evalText } from './review.js';
 import { initAccounts } from './account.js';
-import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame } from './online.js';
+import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby } from './online.js';
 
 const $ = id => document.getElementById(id);
 const SAVE = 'chess.game.v1';
@@ -319,7 +319,7 @@ function renderCard(live) {
   const outcome = !result.winner ? 'draw' : !you ? 'draw' : result.winner === you ? 'win' : 'loss';
   card.className = `go-card ${outcome}`;
   $('go-title').textContent = online
-    ? (result.reason === 'aborted' ? 'Called off' : !result.winner ? 'Draw' : !you ? `${COLOR_NAME[result.winner]} wins` : outcome === 'win' ? 'You win!' : 'Your friend wins')
+    ? (result.reason === 'aborted' ? 'Called off' : !result.winner ? 'Draw' : !you ? `${COLOR_NAME[result.winner]} wins` : outcome === 'win' ? 'You win!' : `${Them()} wins`)
     : outcome === 'win' ? 'You win!' : outcome === 'loss' ? 'Stockfish wins' : 'Draw';
   $('go-rematch').hidden = !!online;
   $('go-score').textContent = result.score.replace(/1\/2/g, '½');
@@ -625,6 +625,9 @@ function renderReview(moves, shown) {
 // checks them and sends the game back to both players (and anyone watching) on its live stream.
 const COLOR_NAME = { w: 'White', b: 'Black' };
 const otherSide = c => (c === 'w' ? 'b' : 'w');
+// "your friend" in a game by link, "your opponent" in one from Live games (who may be a stranger)
+const them = () => (online && online.view.listed ? 'your opponent' : 'your friend');
+const Them = () => them()[0].toUpperCase() + them().slice(1);
 let clockTimer = null;
 let notice = null;   // a one-off message for the status line (e.g. a link that doesn't work)
 
@@ -633,12 +636,13 @@ function sideName(c, short = false) {
   if (!online) return c === player ? 'You' : short ? 'Stockfish' : `Stockfish · level ${level}, ${LEVELS[level - 1].name}`;
   if (c === online.you) return 'You';
   const p = online.view.players[c];
-  if (online.you) return p.name || (p.joined ? 'Your friend' : 'Waiting for your friend…');
+  if (online.you) return p.name || (p.joined ? Them() : `Waiting for ${them()}…`);
   return p.name || (p.joined ? `Guest (${COLOR_NAME[c]})` : `Waiting (${COLOR_NAME[c]})`);
 }
 const possessive = c => (sideName(c, true) === 'You' ? 'Your' : `${sideName(c, true)}’s`);
 
-async function openOnline(id) {
+// join: you chose to play it (from Live games), so there's no invitation to accept first
+async function openOnline(id, { join = false } = {}) {
   stopEngine();
   dropReview();
   leaveOnline();
@@ -652,7 +656,7 @@ async function openOnline(id) {
     const side = v.players.w.joined ? 'b' : 'w';
     const yours = timeText(v.times[side]), theirs = timeText(v.times[otherSide(side)]);
     const same = yours === theirs ? `${yours} each` : `you ${yours}, them ${theirs}`;
-    if (!(await confirmBox(`You’re invited to play ${COLOR_NAME[side]} (${same}). Play?`, 'Play'))) return backToStockfish(true);
+    if (!join && !(await confirmBox(`You’re invited to play ${COLOR_NAME[side]} (${same}). Play?`, 'Play'))) return backToStockfish(true);
     try {
       await joinGame(id);
       v = await getGame(id);
@@ -698,12 +702,12 @@ function onlineResult(v) {
   if (v.status !== 'over' || !v.result) return null;
   const { winner, reason } = v.result, you = online.you;
   const score = winner === 'w' ? '1-0' : winner === 'b' ? '0-1' : '1/2-1/2';
-  const wins = w => (w === you ? 'You win!' : you ? 'Your friend wins.' : `${COLOR_NAME[w]} wins.`);
+  const wins = w => (w === you ? 'You win!' : you ? `${Them()} wins.` : `${COLOR_NAME[w]} wins.`);
   const loser = winner && otherSide(winner);
   const texts = {
     checkmate: () => `Checkmate. ${wins(winner)}`,
-    resign: () => (loser === you ? 'You resigned.' : you ? 'Your friend resigned. You win!' : `${COLOR_NAME[loser]} resigned.`),
-    time: () => (loser === you ? 'Your time ran out.' : you ? 'Your friend ran out of time. You win!' : `${COLOR_NAME[loser]} ran out of time.`),
+    resign: () => (loser === you ? 'You resigned.' : you ? `${Them()} resigned. You win!` : `${COLOR_NAME[loser]} resigned.`),
+    time: () => (loser === you ? 'Your time ran out.' : you ? `${Them()} ran out of time. You win!` : `${COLOR_NAME[loser]} ran out of time.`),
     agreement: () => 'A draw, by agreement.',
     stalemate: () => 'Stalemate: a draw.',
     material: () => 'A draw: neither side has enough pieces left to checkmate.',
@@ -757,9 +761,12 @@ function onlineStatus() {
   const v = online.view, you = online.you, turn = game.turn();
   if (online.problem) return online.problem;
   if (result) return result.text;
-  if (v.status === 'waiting') return you ? 'Waiting for your friend: send them the link below.' : 'Waiting for a second player.';
-  let text = you ? (turn === you ? (game.inCheck() ? 'Check! Your move.' : 'Your move.') : 'Your friend’s move.') : `${COLOR_NAME[turn]} to move.`;
-  if (you && v.drawOffer === otherSide(you)) text = 'Your friend offers a draw.';
+  if (v.status === 'waiting') {
+    if (!you) return 'Waiting for a second player.';
+    return v.listed ? 'Waiting for an opponent: your game is in Live games. You can also send the link below.' : 'Waiting for your friend: send them the link below.';
+  }
+  let text = you ? (turn === you ? (game.inCheck() ? 'Check! Your move.' : 'Your move.') : `${Them()}’s move.`) : `${COLOR_NAME[turn]} to move.`;
+  if (you && v.drawOffer === otherSide(you)) text = `${Them()} offers a draw.`;
   else if (you && v.drawOffer === you) text += ' You’ve offered a draw.';
   return text;
 }
@@ -797,6 +804,10 @@ function renderClocks() {
   }
 }
 
+$('live-games').onclick = () => openLobby((id, how) => {
+  history.pushState(null, '', `?g=${id}`);
+  openOnline(id, { join: how === 'play' });
+});
 $('play-friend').onclick = async () => {
   const settings = await askForGame();
   if (!settings) return;
@@ -925,7 +936,7 @@ $('undo').onclick = takeBack;
 $('flip').onclick = () => { orientation = orientation === 'white' ? 'black' : 'white'; save(); render(); };
 $('download').onclick = downloadPgn;
 $('resign').onclick = async () => {
-  if (online) return onlineAction('resign', ['Resign this game? Your friend will be given the win.', 'Resign']);
+  if (online) return onlineAction('resign', [`Resign this game? ${Them()} will be given the win.`, 'Resign']);
   if (!(await confirmBox('Resign this game? Stockfish will be given the win.', 'Resign'))) return;
   stopEngine();
   finish(player === 'w' ? 'b' : 'w', 'resign', 'You resigned. Stockfish wins.');

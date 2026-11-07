@@ -235,7 +235,23 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .moves li.result { display: block; grid-column: 1 / -1; text-align: center; color: var(--accent); font-weight: 700; padding: 6px; }
 
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.actions #new-game, .actions #review-game, .actions #play-friend { grid-column: 1 / -1; }
+.actions #new-game, .actions #review-game { grid-column: 1 / -1; }
+body.online .actions #live-games { display: none; }
+
+/* Live games: open games to join, and games being played to watch */
+.lobby { width: min(480px, calc(100vw - 32px)); margin: 3vh auto auto; max-height: 94vh; overflow-y: auto; }
+.lobby-head { display: flex; justify-content: space-between; align-items: center; }
+.lobby-head h2 { margin: 0; }
+.lobby h3 { margin: 16px 0 6px; font-size: 0.95rem; color: var(--muted); }
+.lobby-list { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.lobby-list li { display: flex; align-items: center; gap: 10px; background: var(--bg); border-radius: 8px; padding: 8px 10px; }
+.lobby-list .lg-what { flex: 1; min-width: 0; }
+.lobby-list .lg-who { font-weight: 700; }
+.lobby-list .lg-detail { color: var(--muted); font-size: 0.85rem; }
+.lobby-list button { flex: none; }
+.lobby-none { color: var(--muted); font-size: 0.9rem; margin: 4px 0; }
+.lobby-none[hidden] { display: none; }
+.fr-listed { display: block; margin-bottom: 8px; }
 .actions button[hidden] { display: none; }
 
 /* Clocks, in a game against a person: lit while running, red in the last 20 seconds */
