@@ -135,6 +135,7 @@ cg-board square.check { background: radial-gradient(ellipse at center, rgba(224,
 }
 .status { margin: 0; font-weight: 600; min-height: 2.9em; }
 .status.over { color: var(--accent); }
+.status.broken { color: var(--danger); }
 .nav { display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px; }
 .nav svg { width: 18px; height: 18px; fill: currentColor; display: block; margin: 0 auto; }
 .nav button, .actions button, .box button {

@@ -47,7 +47,7 @@ async function seed(page, saved) {
   await page.locator('cg-board piece').first().waitFor();
 }
 
-async function flow(page, who, { touch, mouse }) {
+async function flow(page, who, { touch, mouse, freshPage }) {
   await page.goto('/');
   await page.locator('cg-board piece').first().waitFor();
   check(who, await page.locator('cg-board piece').count() === 32, 'the board starts with 32 pieces');
@@ -209,6 +209,31 @@ async function flow(page, who, { touch, mouse }) {
   const takenText = `${await page.locator('#bottom-player .taken').innerText()} / ${await page.locator('#top-player .taken').innerText()}`;
   check(who, takenText === '+5 / ', 'you’re +5 and the promoted pawn isn’t counted as captured', JSON.stringify(takenText));
   await screenshot(page, `${SHOTS}${who}.png`);
+
+  // When Stockfish can't work, say so instead of "thinking" forever. Each case in a fresh browser.
+  // Its loader missing: the worker reports an error straight away.
+  const noLoader = await freshPage();
+  await noLoader.route('**/stockfish-19-lite-single.js', r => r.fulfill({ status: 404, body: 'gone' }));
+  await noLoader.goto('/');
+  await noLoader.waitForFunction(() => /isn’t working/.test(document.querySelector('#status').textContent));
+  check(who, (await noLoader.locator('#status').innerText()) === 'Stockfish isn’t working: its files couldn’t be loaded. Reload the page to try again.',
+    'a missing engine is reported at once', await noLoader.locator('#status').innerText());
+  await noLoader.close();
+  // Its .wasm missing: no error at all, the engine just never answers, so the 30-second limit catches
+  // it. The page's clock is moved on rather than waiting 30 real seconds.
+  const silent = await freshPage();
+  await silent.clock.install();
+  await silent.route('**/*.wasm', r => r.fulfill({ status: 404, body: 'gone' }));
+  await silent.goto('/');
+  await silent.locator('cg-board piece').first().waitFor();
+  check(who, (await silent.locator('#status').innerText()) === 'Your move.', 'a silent engine looks fine at first');
+  await silent.clock.runFor(31000);
+  await silent.waitForFunction(() => /isn’t working/.test(document.querySelector('#status').textContent));
+  check(who, (await silent.locator('#status').innerText()) === 'Stockfish isn’t working: it didn’t start within 30 seconds. Reload the page to try again.',
+    'and is reported once it misses the 30-second limit', await silent.locator('#status').innerText());
+  await move(silent, 'e2', 'e4', touch);
+  check(who, (await moveCount(silent)) === 0, 'after which you can’t move into a game it can’t answer');
+  await silent.close();
 }
 
 // Playwright's screenshots add a <style> to the page (to hide the text cursor), which the security
@@ -232,7 +257,8 @@ async function onDevice(name) {
   page.on('console', m => { if (!page.shooting && /^CSP blocked|Content Security Policy|Refused to/.test(m.text())) errors.push(m.text()); });
   page.on('dialog', d => { errors.push(`browser popup: ${d.message()}`); d.dismiss(); });
   try {
-    await flow(page, name, { touch: !!device.hasTouch, mouse });
+    const freshPage = async () => (await browser.newContext({ ...device, baseURL: BASE })).newPage();
+    await flow(page, name, { touch: !!device.hasTouch, mouse, freshPage });
     check(name, !errors.length, 'no page errors', errors.join(' | '));
   } catch (e) {
     const where = (e.stack.match(/run\.mjs:\d+/) || ['?'])[0];
