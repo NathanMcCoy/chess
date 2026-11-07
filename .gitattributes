@@ -1,0 +1,5 @@
+# Text files are stored with LF line endings and checked out with LF on every computer, whatever
+# that computer's own settings say, because they're served from Linux. Git guesses which files are
+# text; binary files (pictures, the engine's .wasm) are never changed.
+* text=auto eol=lf
+*.wasm binary

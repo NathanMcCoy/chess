@@ -1,0 +1,7 @@
+# Files git never tracks: they're made on this PC, not part of the project
+node_modules/
+*.log
+.env
+Thumbs.db
+desktop.ini
+.vscode/
