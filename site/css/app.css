@@ -235,7 +235,39 @@ button.primary { background: var(--accent); color: var(--accent-text); border-co
 .moves li.result { display: block; grid-column: 1 / -1; text-align: center; color: var(--accent); font-weight: 700; padding: 6px; }
 
 .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-.actions #new-game, .actions #review-game { grid-column: 1 / -1; }
+.actions #new-game, .actions #review-game, .actions #play-friend { grid-column: 1 / -1; }
+.actions button[hidden] { display: none; }
+
+/* Clocks, in a game against a person: lit while running, red in the last 20 seconds */
+.player .clock {
+  margin-left: 10px; padding: 3px 9px; border-radius: 6px; background: var(--bg); border: 1px solid var(--line);
+  font-variant-numeric: tabular-nums; font-weight: 800; font-size: 1.05rem; color: var(--muted);
+}
+.player .clock[hidden] { display: none; }
+.player .clock.running { background: var(--light-sq); color: #10232d; border-color: var(--light-sq); }
+.player .clock.low { background: var(--danger); color: #fff; border-color: var(--danger); }
+.player .taken { margin-left: auto; }
+
+/* The box for a game against a person: the link to send, and draw / call off / leave */
+.online-box { display: grid; gap: 8px; }
+.online-box[hidden], .online-box [hidden] { display: none; }
+.ob-link { display: grid; grid-template-columns: 1fr auto; gap: 6px; }
+.ob-link input { font: inherit; font-size: 0.85rem; min-width: 0; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 8px; padding: 7px 8px; }
+.ob-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.online-box button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
+.online-box button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
+body.online .actions #new-game, body.online .actions #undo, body.online .actions #play-friend { display: none; }
+
+/* The "Play a friend" box */
+.fr-help { color: var(--muted); font-size: 0.9rem; }
+.fr-presets { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.fr-presets button { padding: 5px 9px; }
+.fr-times { display: grid; gap: 8px; margin-bottom: 8px; }
+.fr-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.fr-row[hidden] { display: none; }
+.fr-row > span { min-width: 6.5em; color: var(--muted); }
+.fr-row input { width: 4.5em; font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 4px 6px; }
+.fr-same { color: var(--muted); font-size: 0.9rem; }
 .actions #review-game[hidden] { display: none; }
 body.reviewing .actions, body.reviewing .hint { display: none; }
 
