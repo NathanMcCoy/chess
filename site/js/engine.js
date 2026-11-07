@@ -60,6 +60,27 @@ export class Engine {
     return move && move !== '(none)' ? move : null;
   }
 
+  // Full-strength analysis of one position, for the game review: the best move and the evaluation
+  // from the point of view of the side to move: { cp } in hundredths of a pawn, or { mate } in moves
+  // (negative = being mated). Reads the "info" lines the engine streams as it searches deeper, and
+  // keeps the last complete one (not "upperbound"/"lowerbound" guesses) before its "bestmove".
+  async analyse(fen, { depth = 16, movetime = 500 } = {}) {
+    await this.ready;
+    this.worker.postMessage('setoption name Skill Level value 20');
+    this.worker.postMessage(`position fen ${fen}`);
+    let score = null;
+    const line = await this.within(movetime + ANSWER_SPARE_MS, 'it stopped answering',
+      this.ask(`go depth ${depth} movetime ${movetime}`, l => {
+        if (l.startsWith('info ') && !/ (upper|lower)bound/.test(l)) {
+          const m = l.match(/ score (cp|mate) (-?\d+)/);
+          if (m) score = { [m[1]]: Number(m[2]) };
+        }
+        return l.startsWith('bestmove');
+      }));
+    const best = line.split(/\s+/)[1];
+    return { best: best && best !== '(none)' ? best : null, score };
+  }
+
   // Tells it to stop thinking: it answers its current "go" straight away (that answer is ignored)
   stop() { if (!this.failure) this.worker.postMessage('stop'); }
 
