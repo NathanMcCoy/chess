@@ -3,6 +3,7 @@
 import { Chess } from '../vendor/chess.js';
 import { Chessground } from '../vendor/chessground.js';
 import { Engine, LEVELS } from './engine.js';
+import { RATING, RATINGS, rate, accuracy, whiteChance, evalText } from './review.js';
 
 const $ = id => document.getElementById(id);
 const SAVE = 'chess.game.v1';
@@ -21,6 +22,14 @@ let busy = false;           // Stockfish is thinking
 let request = 0;            // numbers each request, so an answer that arrives too late is ignored
 let engineError = null;
 let cardClosed = false;     // the result card was closed with "View the board" (it comes back on reload)
+let review = null;          // { key, positions: [{ score, best, turn, legal }] }: the finished game analysed, saved with it
+let reviewing = false;      // the review is on screen
+let analysing = 0;          // numbers each analysis run, so leaving the review stops it
+let analyst = null;         // a second, full-strength Stockfish just for the review, started when first needed
+let reviewError = null;
+let liner = null;           // a third Stockfish for the top lines of the position on the board, started when first needed
+let lineRequest = 0;        // numbers each request, so lines that arrive for a position you've left are ignored
+let lineState = { fen: null, lines: [], depth: 0 };
 
 // --- Saving in this browser ------------------------------------------------------------------
 function load() {
@@ -36,6 +45,8 @@ function load() {
     result = saved.result && saved.result.score ? saved.result : null;
     // Games saved before results recorded a winner: work it out from the score
     if (result && !('winner' in result)) result.winner = { '1-0': 'w', '0-1': 'b' }[result.score] || null;
+    // An analysis is kept only if it is of this very game
+    review = saved.review && saved.review.key === gameKey() && Array.isArray(saved.review.positions) ? saved.review : null;
     return true;
   } catch {
     return false;   // nothing saved, or it can't be read: start a fresh game
@@ -44,7 +55,7 @@ function load() {
 
 function save() {
   try {
-    localStorage.setItem(SAVE, JSON.stringify({ pgn: game.pgn(), player, level, orientation, result }));
+    localStorage.setItem(SAVE, JSON.stringify({ pgn: game.pgn(), player, level, orientation, result, review }));
   } catch { /* private browsing or storage full: the game still works, it just won't survive a reload */ }
 }
 
@@ -61,6 +72,7 @@ const board = Chessground($('board'), {
 });
 
 const startFen = () => game.getHeaders().FEN || new Chess().fen();
+const gameKey = () => `${startFen()}|${game.history().join(' ')}`;
 const legalMoves = pos => {
   const dests = new Map();
   for (const m of pos.moves({ verbose: true })) dests.set(m.from, [...(dests.get(m.from) || []), m.to]);
@@ -87,11 +99,13 @@ function render() {
   renderStatus(live, shown);
   renderCard(live);
   renderPlayers(pos);
+  renderReview(moves, shown);
   $('first').disabled = $('prev').disabled = shown === 0;
   $('next').disabled = $('last').disabled = live;
   $('undo').disabled = !moves.some(m => m.color === player);
   $('resign').disabled = !!result || moves.length === 0;
   $('download').disabled = moves.length === 0;
+  $('review-game').hidden = !result || moves.length === 0;
 }
 
 function renderMoves(moves, shown) {
@@ -114,6 +128,16 @@ function renderMoves(moves, shown) {
     b.textContent = m.san;
     b.dataset.ply = String(i + 1);
     if (i + 1 === shown) b.classList.add('current');
+    const r = ratingOf(i, moves);
+    if (r) {
+      b.dataset.rating = r.rating;
+      b.title = RATING[r.rating].label;
+      const badge = document.createElement('span');
+      badge.className = 'badge';
+      badge.textContent = RATING[r.rating].badge;
+      badge.setAttribute('aria-label', RATING[r.rating].label);
+      b.prepend(badge);
+    }
     row.append(b);
     if (m.color === 'b') { number++; row = null; }
   });
@@ -138,6 +162,7 @@ function renderStatus(live, shown) {
   status.classList.toggle('over', !!result && live);
   status.classList.toggle('broken', !!engineError);
   if (engineError) status.textContent = `Stockfish isn’t working: ${engineError}. Reload the page to try again.`;
+  else if (reviewing) status.textContent = result ? result.text : 'Game review';
   else if (!live) status.textContent = `Looking at move ${Math.ceil(shown / 2) || 'start'}. Press ⏭ to go back to the game.`;
   else if (result) status.textContent = result.text;
   else if (busy) status.textContent = 'Stockfish is thinking…';
@@ -247,7 +272,7 @@ const REASONS = {
 };
 function renderCard(live) {
   const box = $('gameover');
-  box.hidden = !(result && live && !cardClosed);
+  box.hidden = !(result && live && !cardClosed && !reviewing);
   if (box.hidden) return;
   const card = box.querySelector('.go-card');
   const outcome = !result.winner ? 'draw' : result.winner === player ? 'win' : 'loss';
@@ -276,6 +301,7 @@ function stopEngine() {
 function takeBack() {
   stopEngine();
   if (result) { result = null; game.setHeader('Result', '*'); }   // taking back reopens a finished game
+  dropReview();
   while (game.history().length) {
     if (game.undo().color === player) break;   // back to before your last move
   }
@@ -292,6 +318,7 @@ function newGame(side, newLevel) {
   player = side;
   level = newLevel;
   result = null;
+  dropReview();
   view = null;
   orientation = COLOR[side];
   const now = new Date();
@@ -302,6 +329,245 @@ function newGame(side, newLevel) {
   save();
   render();
   if (player === 'b') engineMove();
+}
+
+// --- The game review -------------------------------------------------------------------------
+// Every position of the finished game is analysed at full strength (one at a time, saving as it
+// goes, so a reload carries on where it stopped), and each move is rated by how much of the mover's
+// winning chances it gave away (review.js).
+async function startReview() {
+  if (!result || !game.history().length) return;
+  reviewing = true;
+  cardClosed = true;
+  reviewError = null;
+  if (view === null) view = 0;   // start from the beginning, like reading the game through
+  if (!review) review = { key: gameKey(), positions: [] };
+  render();
+  const mine = ++analysing;
+  analyst ||= new Engine();
+  const fens = [startFen(), ...game.history({ verbose: true }).map(m => m.after)];
+  for (let i = review.positions.length; i < fens.length; i++) {
+    const pos = new Chess(fens[i]);
+    let found;
+    if (pos.isCheckmate()) found = { score: { mate: 0 }, best: null };   // the side to move is mated
+    else if (pos.isStalemate() || pos.isInsufficientMaterial()) found = { score: { cp: 0 }, best: null };
+    else {
+      try {
+        found = await analyst.analyse(fens[i]);
+      } catch (e) {
+        if (mine === analysing) { reviewError = e.message || String(e); render(); }
+        return;
+      }
+    }
+    if (mine !== analysing) return;   // the review was left, or the game changed, meanwhile
+    review.positions.push({ ...found, turn: pos.turn(), legal: pos.moves().length });
+    save();
+    render();
+  }
+}
+
+// The top three lines for a position: asked for when the position on the board changes, shown
+// as Stockfish searches deeper. The search for the position before is stopped first.
+function wantLines(fen) {
+  if (lineState.fen === fen) return;
+  const mine = ++lineRequest;
+  lineState = { fen, lines: [], depth: 0 };
+  if (new Chess(fen).isGameOver()) { lineState.over = true; return; }
+  liner ||= new Engine();
+  liner.stop();
+  const still = () => mine === lineRequest;
+  liner.lines(fen, {}, (lines, depth) => { if (still()) { lineState = { fen, lines, depth }; renderLines(); } })
+    .then(lines => { if (still() && lines.length) { lineState = { ...lineState, lines, done: true }; renderLines(); } })
+    .catch(e => { if (still()) { lineState = { ...lineState, error: e.message || String(e) }; renderLines(); } });
+}
+
+function stopLines() {
+  lineRequest++;
+  lineState = { fen: null, lines: [], depth: 0 };
+  if (liner) liner.stop();
+}
+
+// A line of moves as people write them: "12. Nf3 Nc6 13. Bb5", or "12… Nc6 13. Bb5" from Black
+function lineText(fen, pv, plies = 9) {
+  const pos = new Chess(fen);
+  let number = Number(fen.split(' ')[5]) || 1;
+  const out = [];
+  for (const uci of pv.slice(0, plies)) {
+    const turn = pos.turn();
+    let m;
+    try { m = pos.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] }); } catch { break; }
+    if (turn === 'w') out.push(`${number}.`);
+    else if (!out.length) out.push(`${number}…`);
+    out.push(m.san);
+    if (turn === 'b') number++;
+  }
+  return out.join(' ') + (pv.length > plies ? ' …' : '');
+}
+
+function renderLines() {
+  const box = $('rv-lines');
+  box.replaceChildren();
+  const head = document.createElement('p');
+  head.className = 'rv-lines-head';
+  const { fen, lines, depth, over, error } = lineState;
+  if (!fen) return;
+  if (error) head.textContent = `Stockfish isn’t working: ${error}.`;
+  else if (over) head.textContent = 'No moves to suggest: the game is over here.';
+  else head.textContent = depth ? `Top lines · depth ${depth}` : 'Top lines · thinking…';
+  box.append(head);
+  const turn = fen.split(' ')[1];
+  for (const line of lines) {
+    const row = document.createElement('p');
+    row.className = 'rv-line';
+    const score = document.createElement('span');
+    const text = evalText(line.score, turn);
+    score.className = `rv-score ${/^−/.test(text) ? 'black' : 'white'}`;
+    score.textContent = text;
+    const moves = document.createElement('span');
+    moves.className = 'rv-pv';
+    moves.textContent = lineText(fen, line.pv);
+    row.append(score, moves);
+    box.append(row);
+  }
+}
+
+function leaveReview() {
+  stopLines();
+  analysing++;
+  if (analyst) analyst.stop();
+  reviewing = false;
+  view = null;
+  render();
+}
+
+function dropReview() {
+  stopLines();
+  analysing++;
+  if (analyst) analyst.stop();
+  review = null;
+  reviewing = false;
+}
+
+// Move i's rating (0 = the first move), once the positions either side of it are analysed
+function ratingOf(i, moves) {
+  const p = review && review.positions;
+  if (!p || !p[i + 1]) return null;
+  const m = (moves || game.history({ verbose: true }))[i];
+  return rate(p[i], p[i + 1], m.from + m.to + (m.promotion || ''), p[i].legal);
+}
+
+// A move in UCI form ("g1f3") as people write it ("Nf3"), in the position it's played from
+function san(fen, uci) {
+  try { return new Chess(fen).move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] }).san; } catch { return uci; }
+}
+
+function renderReview(moves, shown) {
+  document.body.classList.toggle('reviewing', reviewing);
+  $('review').hidden = !reviewing;
+  $('evalbar').hidden = !reviewing;
+  $('rv-summary').hidden = !reviewing;
+  if (!reviewing) { board.setAutoShapes([]); return; }
+  const positions = review ? review.positions : [];
+  const total = moves.length + 1;
+  const fullMoves = Math.ceil(moves.length / 2);
+
+  // Progress while it works
+  const progress = $('rv-progress');
+  progress.hidden = positions.length >= total && !reviewError;
+  progress.querySelector('span').textContent = reviewError
+    ? `Stockfish isn’t working: ${reviewError}. Reload the page to try again.`
+    : `Analysing move ${Math.min(Math.floor(positions.length / 2) + 1, fullMoves)} of ${fullMoves}…`;
+  progress.querySelector('progress').value = positions.length / total;
+
+  // The evaluation bar: White's chances in the position on the board
+  const here = positions[shown];
+  const bar = $('evalbar');
+  const white = here ? whiteChance(here.score, here.turn) : 50;
+  bar.classList.toggle('flipped', orientation === 'black');
+  bar.classList.toggle('black-ahead', white < 50);
+  bar.querySelector('.fill').style.height = `${white}%`;
+  bar.querySelector('.score').textContent = here ? evalText(here.score, here.turn).replace(/^[+−]/, '') : '';
+
+  // The verdict on the move just played, and an arrow for what Stockfish would have played
+  const verdict = $('rv-verdict');
+  const fens = [startFen(), ...moves.map(m => m.after)];
+  if (lineState.fen !== fens[shown]) { wantLines(fens[shown]); renderLines(); }
+  const r = shown > 0 ? ratingOf(shown - 1, moves) : null;
+  const shapes = [];
+  verdict.style.removeProperty('--rc');
+  if (shown === 0) verdict.textContent = 'The starting position. Step through the moves with ▶ or the arrow keys.';
+  else if (!r) verdict.textContent = `${moves[shown - 1].san}: still being analysed…`;
+  else {
+    const m = moves[shown - 1], before = positions[shown - 1], label = RATING[r.rating].label.toLowerCase();
+    const who = m.color === player ? 'Your' : 'Stockfish’s';
+    verdict.replaceChildren();
+    verdict.style.setProperty('--rc', `var(--r-${r.rating})`);
+    const head = document.createElement('span');
+    const b = document.createElement('b');
+    b.textContent = `${m.san}${RATING[r.rating].symbol}`;
+    const what = r.forced ? ' was the only move.' : r.rating === 'best' ? ' was the best move.'
+      : ` was ${/^[aeiou]/.test(label) ? 'an' : 'a'} ${label}.`;
+    head.append(`${who} `, b, what);
+    const line = document.createElement('span');
+    line.className = 'best';
+    const now = positions[shown];
+    const evalNow = !now ? '' : now.score && now.score.mate === 0 ? 'Checkmate.' : `Evaluation ${evalText(now.score, now.turn)}.`;
+    line.textContent = [r.rating !== 'best' && before.best ? `Best was ${san(fens[shown - 1], before.best)}.` : '', evalNow].filter(Boolean).join(' ');
+    verdict.append(head, line);
+    if (r.rating !== 'best' && before.best) shapes.push({ orig: before.best.slice(0, 2), dest: before.best.slice(2, 4), brush: 'green' });
+    // The move's badge on the corner of the square it landed on (drawn by chessground in a
+    // 100 × 100 box over the square; colours come from the stylesheet, as the security policy
+    // allows no inline styles)
+    shapes.push({ orig: m.to, customSvg: { html: `<g class="sq-badge" data-rating="${r.rating}"><circle cx="82" cy="18" r="17"/><text x="82" y="19">${RATING[r.rating].badge}</text></g>` } });
+  }
+  board.setAutoShapes(shapes);
+
+  // The graph: White's chances move by move, with the poor moves marked and the current one lit
+  const svg = $('rv-graph');
+  const x = i => (moves.length ? (i / moves.length) * 100 : 0);
+  const y = p => 32 - (p / 100) * 32;
+  const points = positions.map((p, i) => `${x(i).toFixed(2)},${y(whiteChance(p.score, p.turn)).toFixed(2)}`);
+  let marks = '';
+  for (let i = 0; i < moves.length; i++) {
+    const ri = ratingOf(i, moves);
+    if (ri && ['inaccuracy', 'mistake', 'blunder'].includes(ri.rating)) {
+      marks += `<line class="mark" data-rating="${ri.rating}" x1="${x(i + 1)}" x2="${x(i + 1)}" y1="0" y2="32"/>`;
+    }
+  }
+  svg.innerHTML = '<line class="mid" x1="0" x2="100" y1="16" y2="16"/>'
+    + (points.length > 1 ? `<polygon class="area" points="0,32 ${points.join(' ')} ${x(positions.length - 1).toFixed(2)},32"/>` : '')
+    + marks + `<line class="now" x1="${x(shown)}" x2="${x(shown)}" y1="0" y2="32"/>`;
+
+  // The summary: accuracy and how many moves of each rating, for each side
+  const sides = ['w', 'b'].map(c => ({ c, name: c === player ? 'You' : 'Stockfish', losses: [], counts: {} }));
+  for (let i = 0; i < moves.length; i++) {
+    const ri = ratingOf(i, moves);
+    if (!ri) continue;
+    const side = sides.find(s => s.c === moves[i].color);
+    side.losses.push(ri.loss);
+    side.counts[ri.rating] = (side.counts[ri.rating] || 0) + 1;
+  }
+  const acc = s => { const a = accuracy(s.losses); return a === null ? '…' : a.toFixed(1); };
+  const table = $('rv-summary');
+  table.replaceChildren();
+  const row = (cells, cls) => {
+    const tr = document.createElement('tr');
+    if (cls) tr.className = cls;
+    for (const [text, rating, tag = 'td', klass] of cells) {
+      const c = document.createElement(tag);
+      c.textContent = text;
+      if (rating) c.dataset.rating = rating;
+      if (klass) c.className = klass;
+      tr.append(c);
+    }
+    return tr;
+  };
+  const head = document.createElement('thead');
+  head.append(row([['', null, 'th'], ...sides.map(s => [`${s.name} (${COLOR[s.c]})`, null, 'th'])]));
+  const body = document.createElement('tbody');
+  body.append(row([['Accuracy'], ...sides.map(s => [acc(s)])], 'acc'));
+  for (const rt of RATINGS) body.append(row([[rt.label, rt.id, 'td', 'label'], ...sides.map(s => [String(s.counts[rt.id] || 0), s.counts[rt.id] ? rt.id : null])]));
+  table.append(head, body);
 }
 
 // --- Boxes -----------------------------------------------------------------------------------
@@ -388,6 +654,13 @@ document.addEventListener('keydown', e => {
 
 $('new-game').onclick = openNewGame;
 $('go-rematch').onclick = () => newGame(player, level);
+$('go-review').onclick = startReview;
+$('review-game').onclick = startReview;
+$('rv-exit').onclick = leaveReview;
+$('rv-graph').onclick = e => {
+  const r = e.currentTarget.getBoundingClientRect();
+  show(Math.round(((e.clientX - r.left) / r.width) * game.history().length));
+};
 $('go-new').onclick = openNewGame;
 $('go-close').onclick = () => { cardClosed = true; render(); };
 $('undo').onclick = takeBack;

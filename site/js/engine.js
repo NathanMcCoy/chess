@@ -60,6 +60,63 @@ export class Engine {
     return move && move !== '(none)' ? move : null;
   }
 
+  // Full-strength analysis of one position, for the game review: the best move and the evaluation
+  // from the point of view of the side to move: { cp } in hundredths of a pawn, or { mate } in moves
+  // (negative = being mated). Reads the "info" lines the engine streams as it searches deeper, and
+  // keeps the last complete one (not "upperbound"/"lowerbound" guesses) before its "bestmove".
+  async analyse(fen, { depth = 16, movetime = 500 } = {}) {
+    await this.ready;
+    this.worker.postMessage('setoption name Skill Level value 20');
+    this.worker.postMessage(`position fen ${fen}`);
+    let score = null;
+    const line = await this.within(movetime + ANSWER_SPARE_MS, 'it stopped answering',
+      this.ask(`go depth ${depth} movetime ${movetime}`, l => {
+        if (l.startsWith('info ') && !/ (upper|lower)bound/.test(l)) {
+          const m = l.match(/ score (cp|mate) (-?\d+)/);
+          if (m) score = { [m[1]]: Number(m[2]) };
+        }
+        return l.startsWith('bestmove');
+      }));
+    const best = line.split(/\s+/)[1];
+    return { best: best && best !== '(none)' ? best : null, score };
+  }
+
+  // The best few lines from a position (Stockfish's MultiPV), for the review's "top lines". Calls
+  // `update(lines, depth)` each time a search depth is complete, so the lines can be shown as they
+  // improve, and resolves with the final ones. Each line: { score, pv: ['e2e4', 'e7e5', ...] }, the
+  // score from the side to move's point of view. Searches run one after another: a new one waits
+  // for the last to finish (stop() makes that quick), so the end of an old search is never taken
+  // for the end of a new one.
+  lines(fen, { count = 3, depth = 18, movetime = 1500 } = {}, update = () => {}) {
+    const run = async () => {
+      await this.ready;
+      this.worker.postMessage('setoption name Skill Level value 20');
+      this.worker.postMessage(`setoption name MultiPV value ${count}`);
+      this.worker.postMessage(`position fen ${fen}`);
+      const found = [];
+      let shownDepth = 0;
+      await this.within(movetime + ANSWER_SPARE_MS, 'it stopped answering',
+        this.ask(`go depth ${depth} movetime ${movetime}`, l => {
+          const m = l.startsWith('info ') && !/ (upper|lower)bound/.test(l)
+            && l.match(/ depth (\d+) .*?multipv (\d+) .*?score (cp|mate) (-?\d+) .*? pv (.+)$/);
+          if (m) {
+            const [, d, k, kind, value, pv] = m;
+            found[Number(k) - 1] = { depth: Number(d), score: { [kind]: Number(value) }, pv: pv.trim().split(/\s+/) };
+            // A depth is complete when every line has reached it (or there are fewer legal moves)
+            const at = Number(d);
+            if (Number(k) === found.length && found.every(f => f && f.depth === at) && at > shownDepth) {
+              shownDepth = at;
+              update(found.slice(), at);
+            }
+          }
+          return l.startsWith('bestmove');
+        }));
+      return found.filter(Boolean);
+    };
+    this.queue = (this.queue || Promise.resolve()).catch(() => {}).then(run);
+    return this.queue;
+  }
+
   // Tells it to stop thinking: it answers its current "go" straight away (that answer is ignored)
   stop() { if (!this.failure) this.worker.postMessage('stop'); }
 

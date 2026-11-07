@@ -6,6 +6,7 @@ import { chromium, webkit, devices } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { serve } from './server.mjs';
+import { Chess } from '../site/vendor/chess.js';   // to check that suggested moves are legal
 
 const SHOTS = fileURLToPath(new URL('./shots/', import.meta.url));
 mkdirSync(SHOTS, { recursive: true });
@@ -209,6 +210,85 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   const takenText = `${await page.locator('#bottom-player .taken').innerText()} / ${await page.locator('#top-player .taken').innerText()}`;
   check(who, takenText === '+5 / ', 'you’re +5 and the promoted pawn isn’t counted as captured', JSON.stringify(takenText));
   await screenshot(page, `${SHOTS}${who}.png`);
+
+  // The game review, on Fool's Mate (you as White, and losing): 1. f3 e5 2. g4?? Qh4#
+  const rv = await freshPage();
+  await rv.goto('/');
+  await rv.evaluate(s => localStorage.setItem('chess.game.v1', JSON.stringify(s)), { pgn: '1. f3 e5 2. g4 Qh4# 0-1', player: 'w', level: 3, orientation: 'white', result: { score: '0-1', winner: 'b', reason: 'checkmate', text: 'Checkmate. Stockfish wins.' } });
+  await rv.reload();
+  await rv.locator('#gameover:not([hidden])').getByRole('button', { name: 'Review this game' }).click();
+  check(who, await rv.locator('#review').isVisible() && await rv.locator('#evalbar').isVisible() && await rv.locator('.actions').isHidden(),
+    'Review this game opens the review, with the evaluation bar');
+  await rv.locator('#rv-progress').waitFor({ state: 'hidden', timeout: 30000 });
+  // Each move as "move:rating:badge", the badge read on its own
+  const ratings = await rv.locator('#moves button').evaluateAll(bs => bs.map(b => {
+    const badge = b.querySelector('.badge');
+    return `${b.textContent.slice(badge ? badge.textContent.length : 0)}:${b.dataset.rating}:${badge ? badge.textContent : ''}`;
+  }));
+  check(who, ratings.length === 4 && ratings.every(r => !/:undefined:|:$/.test(r)), 'every move gets a rating and a badge', ratings.join(' '));
+  check(who, ratings[2] === 'g4:blunder:??' && ratings[3] === 'Qh4#:best:★', 'g4 is a blunder (??) and Qh4# the best move (★)', ratings.join(' '));
+  await rv.locator('#moves button[data-ply="3"]').click();
+  // The move's badge on the board: on g4, in the square's top-right corner
+  const sqBadge = rv.locator('svg.cg-custom-svgs .sq-badge');
+  await sqBadge.first().waitFor({ state: 'attached', timeout: 2000 }).catch(() => {});
+  const g4 = await square(rv, 'g4');
+  const bb = await sqBadge.first().locator('circle').boundingBox().catch(() => null);
+  const size = (await rv.locator('cg-board').boundingBox()).width / 8;
+  const inCorner = bb && bb.x > g4.x && bb.x + bb.width <= g4.x + size / 2 + 1 && bb.y >= g4.y - size / 2 - 1 && bb.y + bb.height < g4.y;
+  check(who, await sqBadge.count() === 1 && await sqBadge.first().getAttribute('data-rating') === 'blunder' && inCorner,
+    'the board shows a blunder badge in the corner of g4', bb ? `badge at ${Math.round(bb.x - g4.x)},${Math.round(bb.y - g4.y)} from the centre, ${Math.round(bb.width)} px` : 'no badge');
+  const verdict = await rv.locator('#rv-verdict').innerText();
+  check(who, /^Your g4\?\? was a blunder\.\s*Best was \S+\. Evaluation .*M1\.$/.test(verdict), 'it says what g4 was, what was best and that it allows mate', JSON.stringify(verdict));
+  // Drawn on the next screen refresh, like the check highlight. "attached", not "visible": a straight
+  // up-the-board arrow like e2-e4 has a bounding box 0 px wide, which never counts as visible.
+  const arrow = await rv.locator('svg.cg-shapes line').first().waitFor({ state: 'attached', timeout: 2000 }).then(() => true, () => false);
+  const vertical = arrow && await rv.locator('svg.cg-shapes line').first().evaluate(l => l.getAttribute('x1') === l.getAttribute('x2'));
+  check(who, arrow && vertical, 'and draws an arrow for the best move (e2-e4, straight up the board)');
+
+  // Top lines for the position on the board: after g4, Black's best is the mate
+  const lines = () => rv.locator('#rv-lines .rv-line').evaluateAll(ls => ls.map(l => ({ score: l.querySelector('.rv-score').textContent, moves: l.querySelector('.rv-pv').textContent })));
+  await rv.waitForFunction(() => /depth \d+/.test(document.querySelector('#rv-lines .rv-lines-head')?.textContent || ''), null, { timeout: 15000 });
+  const afterG4 = await lines();
+  check(who, afterG4.length >= 1 && afterG4[0].score === '−M1' && afterG4[0].moves.startsWith('2… Qh4#'), 'the top line after g4 is Black’s mate in one', JSON.stringify(afterG4[0]));
+  // Jump to g4 and straight back to the start: the lines must be for the start, never left over from g4
+  await rv.locator('#moves button[data-ply="3"]').click();
+  await rv.locator('#first').click();
+  await rv.waitForFunction(() => /depth (1[0-9]|[5-9])\b/.test(document.querySelector('#rv-lines .rv-lines-head')?.textContent || ''), null, { timeout: 15000 });
+  const atStart = await lines();
+  const legalFirst = new Set(new Chess().moves());
+  const firsts = atStart.map(l => l.moves.replace(/^1\.\s+/, '').split(' ')[0]);
+  check(who, atStart.length === 3 && firsts.every(m => legalFirst.has(m)) && atStart.every(l => /^[+−]?\d+\.\d$|^0\.0$/.test(l.score)),
+    'at the start: three lines, each beginning with a legal first move and a normal score', JSON.stringify(atStart.map(l => `${l.score} ${l.moves}`)));
+  await rv.locator('#moves button[data-ply="3"]').click();
+  await rv.locator('#last').click();
+  const last = (await rv.locator('#rv-verdict').innerText()).replace(/\s+/g, ' ');
+  check(who, last === 'Stockfish’s Qh4# was the best move. Checkmate.', 'Qh4# is described as Stockfish’s best move, and checkmate', JSON.stringify(last));
+  const fill = await rv.locator('#evalbar .fill').evaluate(f => f.style.height);
+  check(who, fill === '0%', 'with White mated, the bar is all Black', fill);
+  const summary = await rv.locator('#rv-summary').innerText();
+  check(who, /You \(white\)\s+Stockfish \(black\)/.test(summary) && /Blunder\s+1\s+0/.test(summary) && /Accuracy\s+[\d.]+\s+[\d.]+/.test(summary), 'the summary shows accuracy and counts for each side', JSON.stringify(summary.replace(/\s+/g, ' ')));
+  check(who, await rv.locator('#rv-graph polygon').count() === 1 && await rv.locator('#rv-graph .mark[data-rating="blunder"]').count() === 1, 'the graph draws the game with the blunder marked');
+  const wide = await rv.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+  check(who, wide <= 0, 'the bar fits beside the board without widening the page', `${wide}px over`);
+  // The review panel can be taller than the window: it must scroll, not spill over the page
+  const spill = await rv.evaluate(() => {
+    const p = document.querySelector('.panel'), r = p.getBoundingClientRect();
+    const overflowing = p.scrollHeight > p.clientHeight + 1;
+    const scrolls = ['auto', 'scroll'].includes(getComputedStyle(p).overflowY);
+    const lowest = Math.max(...[...p.children].filter(c => !c.hidden).map(c => c.getBoundingClientRect().bottom));
+    return overflowing && !scrolls ? `${Math.round(lowest - r.bottom)}px spills out` : '';
+  });
+  check(who, !spill, 'the review panel never spills out of its box', spill);
+  await rv.waitForTimeout(400);   // let pieces finish sliding (0.18 s) and the bar settle (0.3 s), so the picture shows the final position
+  await screenshot(rv, `${SHOTS}${who}-review.png`);
+  // Saved: a reload keeps the analysis, so reviewing again is instant
+  await rv.reload();
+  await rv.locator('#gameover:not([hidden])').getByRole('button', { name: 'View the board' }).click();
+  await rv.locator('#review-game').click();
+  check(who, await rv.locator('#rv-progress').isHidden() && (await rv.locator('#moves button[data-rating]').count()) === 4, 'a reload keeps the analysis');
+  await rv.locator('#rv-exit').click();
+  check(who, await rv.locator('#review').isHidden() && await rv.locator('#evalbar').isHidden() && await rv.locator('.actions').isVisible(), 'Done leaves the review');
+  await rv.close();
 
   // When Stockfish can't work, say so instead of "thinking" forever. Each case in a fresh browser.
   // Its loader missing: the worker reports an error straight away.
