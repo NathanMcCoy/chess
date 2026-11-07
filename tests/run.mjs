@@ -239,11 +239,21 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     'the board shows a blunder badge in the corner of g4', bb ? `badge at ${Math.round(bb.x - g4.x)},${Math.round(bb.y - g4.y)} from the centre, ${Math.round(bb.width)} px` : 'no badge');
   const verdict = await rv.locator('#rv-verdict').innerText();
   check(who, /^Your g4\?\? was a blunder\.\s*Best was \S+\. Evaluation .*M1\.$/.test(verdict), 'it says what g4 was, what was best and that it allows mate', JSON.stringify(verdict));
-  // Drawn on the next screen refresh, like the check highlight. "attached", not "visible": a straight
-  // up-the-board arrow like e2-e4 has a bounding box 0 px wide, which never counts as visible.
+  // The arrow is for whatever the review found best there. Not a fixed move: each position gets
+  // 0.5 s, so a slower computer (GitHub's) can settle on a different, equally good one; this test
+  // once insisted on e2-e4 and failed there. Drawn on the next screen refresh, like the check
+  // highlight; "attached", not "visible", as a straight arrow's bounding box is 0 px wide.
+  const best = await rv.evaluate(() => JSON.parse(localStorage.getItem('chess.game.v1')).review.positions[2].best);
   const arrow = await rv.locator('svg.cg-shapes line').first().waitFor({ state: 'attached', timeout: 2000 }).then(() => true, () => false);
-  const vertical = arrow && await rv.locator('svg.cg-shapes line').first().evaluate(l => l.getAttribute('x1') === l.getAttribute('x2'));
-  check(who, arrow && vertical, 'and draws an arrow for the best move (e2-e4, straight up the board)');
+  // chessground's arrows are in board units: a square's centre is at (file - 3.5, 3.5 - rank) with
+  // White at the bottom, files and ranks counted from 0; the arrow runs from the start square's
+  // centre towards the destination's (stopping short of it, for the head)
+  const at = sq => [sq.charCodeAt(0) - 97 - 3.5, 3.5 - (Number(sq[1]) - 1)];
+  const ends = arrow && await rv.locator('svg.cg-shapes line').first().evaluate(l => ['x1', 'y1', 'x2', 'y2'].map(a => Number(l.getAttribute(a))));
+  const [ox, oy] = at(best.slice(0, 2)), [dx, dy] = at(best.slice(2, 4));
+  const fromStart = ends && Math.abs(ends[0] - ox) < 0.01 && Math.abs(ends[1] - oy) < 0.01;
+  const towardDest = ends && Math.abs(Math.atan2(ends[3] - ends[1], ends[2] - ends[0]) - Math.atan2(dy - oy, dx - ox)) < 0.01;
+  check(who, arrow && fromStart && towardDest, `and draws an arrow for the best move (${best})`, ends ? ends.map(n => n.toFixed(2)).join(',') : 'no arrow');
 
   // Top lines for the position on the board: after g4, Black's best is the mate
   const lines = () => rv.locator('#rv-lines .rv-line').evaluateAll(ls => ls.map(l => ({ score: l.querySelector('.rv-score').textContent, moves: l.querySelector('.rv-pv').textContent })));
