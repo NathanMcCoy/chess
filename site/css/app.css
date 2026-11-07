@@ -62,7 +62,9 @@ cg-board square.last-move { background-color: var(--highlight); }
 cg-board square.selected { background-color: rgba(242, 196, 109, 0.75); }
 cg-board square.move-dest { background: radial-gradient(var(--dest) 19%, transparent 21%); }
 cg-board square.oc.move-dest { background: radial-gradient(transparent 0 78%, var(--dest) 80%); }
-cg-board square.move-dest:hover { background: rgba(16, 58, 79, 0.28); }
+/* Hovering a square you can move to: the dot (or capture ring) stays, with the square tinted under it */
+cg-board square.move-dest:hover { background: radial-gradient(var(--dest) 19%, transparent 21%), rgba(16, 58, 79, 0.22); }
+cg-board square.oc.move-dest:hover { background: radial-gradient(transparent 0 78%, var(--dest) 80%), rgba(16, 58, 79, 0.22); }
 cg-board square.check { background: radial-gradient(ellipse at center, rgba(224, 60, 40, 1) 0%, rgba(224, 60, 40, 0.8) 30%, rgba(224, 60, 40, 0) 80%); }
 /* Coordinates inside the edge squares: ranks top-left of the left column, files bottom-right of
    the bottom row. (chessground's own placement sits partly outside the board.) */

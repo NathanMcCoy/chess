@@ -107,6 +107,14 @@ async function flow(page, who, { touch, mouse }) {
   // Arrows and circles, with the mouse's right button
   if (mouse) {
     const a = await square(page, 'g1'), b = await square(page, 'f3');
+    // Hovering a square you can move to keeps its dot (it used to swap it for a faint tint)
+    await page.mouse.click(a.x, a.y, { delay: 80 });
+    await page.mouse.move(b.x, b.y);
+    await page.waitForTimeout(50);
+    const hovered = await page.evaluate(() => { const s = document.querySelector('cg-board square.move-dest:hover'); return s ? getComputedStyle(s).backgroundImage : 'no hovered square'; });
+    check(who, /radial-gradient/.test(hovered), 'hovering a legal square keeps its dot', hovered.slice(0, 40));
+    await page.mouse.click(a.x, a.y, { delay: 80 });   // put the knight down again
+    await page.waitForTimeout(50);
     await page.mouse.move(a.x, a.y);
     await page.mouse.down({ button: 'right' });
     await page.mouse.move(b.x, b.y, { steps: 5 });
