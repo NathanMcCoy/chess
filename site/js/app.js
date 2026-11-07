@@ -27,6 +27,9 @@ let reviewing = false;      // the review is on screen
 let analysing = 0;          // numbers each analysis run, so leaving the review stops it
 let analyst = null;         // a second, full-strength Stockfish just for the review, started when first needed
 let reviewError = null;
+let liner = null;           // a third Stockfish for the top lines of the position on the board, started when first needed
+let lineRequest = 0;        // numbers each request, so lines that arrive for a position you've left are ignored
+let lineState = { fen: null, lines: [], depth: 0 };
 
 // --- Saving in this browser ------------------------------------------------------------------
 function load() {
@@ -363,7 +366,73 @@ async function startReview() {
   }
 }
 
+// The top three lines for a position: asked for when the position on the board changes, shown
+// as Stockfish searches deeper. The search for the position before is stopped first.
+function wantLines(fen) {
+  if (lineState.fen === fen) return;
+  const mine = ++lineRequest;
+  lineState = { fen, lines: [], depth: 0 };
+  if (new Chess(fen).isGameOver()) { lineState.over = true; return; }
+  liner ||= new Engine();
+  liner.stop();
+  const still = () => mine === lineRequest;
+  liner.lines(fen, {}, (lines, depth) => { if (still()) { lineState = { fen, lines, depth }; renderLines(); } })
+    .then(lines => { if (still() && lines.length) { lineState = { ...lineState, lines, done: true }; renderLines(); } })
+    .catch(e => { if (still()) { lineState = { ...lineState, error: e.message || String(e) }; renderLines(); } });
+}
+
+function stopLines() {
+  lineRequest++;
+  lineState = { fen: null, lines: [], depth: 0 };
+  if (liner) liner.stop();
+}
+
+// A line of moves as people write them: "12. Nf3 Nc6 13. Bb5", or "12… Nc6 13. Bb5" from Black
+function lineText(fen, pv, plies = 9) {
+  const pos = new Chess(fen);
+  let number = Number(fen.split(' ')[5]) || 1;
+  const out = [];
+  for (const uci of pv.slice(0, plies)) {
+    const turn = pos.turn();
+    let m;
+    try { m = pos.move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] }); } catch { break; }
+    if (turn === 'w') out.push(`${number}.`);
+    else if (!out.length) out.push(`${number}…`);
+    out.push(m.san);
+    if (turn === 'b') number++;
+  }
+  return out.join(' ') + (pv.length > plies ? ' …' : '');
+}
+
+function renderLines() {
+  const box = $('rv-lines');
+  box.replaceChildren();
+  const head = document.createElement('p');
+  head.className = 'rv-lines-head';
+  const { fen, lines, depth, over, error } = lineState;
+  if (!fen) return;
+  if (error) head.textContent = `Stockfish isn’t working: ${error}.`;
+  else if (over) head.textContent = 'No moves to suggest: the game is over here.';
+  else head.textContent = depth ? `Top lines · depth ${depth}` : 'Top lines · thinking…';
+  box.append(head);
+  const turn = fen.split(' ')[1];
+  for (const line of lines) {
+    const row = document.createElement('p');
+    row.className = 'rv-line';
+    const score = document.createElement('span');
+    const text = evalText(line.score, turn);
+    score.className = `rv-score ${/^−/.test(text) ? 'black' : 'white'}`;
+    score.textContent = text;
+    const moves = document.createElement('span');
+    moves.className = 'rv-pv';
+    moves.textContent = lineText(fen, line.pv);
+    row.append(score, moves);
+    box.append(row);
+  }
+}
+
 function leaveReview() {
+  stopLines();
   analysing++;
   if (analyst) analyst.stop();
   reviewing = false;
@@ -372,6 +441,7 @@ function leaveReview() {
 }
 
 function dropReview() {
+  stopLines();
   analysing++;
   if (analyst) analyst.stop();
   review = null;
@@ -421,6 +491,7 @@ function renderReview(moves, shown) {
   // The verdict on the move just played, and an arrow for what Stockfish would have played
   const verdict = $('rv-verdict');
   const fens = [startFen(), ...moves.map(m => m.after)];
+  if (lineState.fen !== fens[shown]) { wantLines(fens[shown]); renderLines(); }
   const r = shown > 0 ? ratingOf(shown - 1, moves) : null;
   const shapes = [];
   verdict.style.removeProperty('--rc');

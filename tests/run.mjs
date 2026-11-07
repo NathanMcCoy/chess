@@ -6,6 +6,7 @@ import { chromium, webkit, devices } from 'playwright';
 import { mkdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { serve } from './server.mjs';
+import { Chess } from '../site/vendor/chess.js';   // to check that suggested moves are legal
 
 const SHOTS = fileURLToPath(new URL('./shots/', import.meta.url));
 mkdirSync(SHOTS, { recursive: true });
@@ -243,6 +244,22 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   const arrow = await rv.locator('svg.cg-shapes line').first().waitFor({ state: 'attached', timeout: 2000 }).then(() => true, () => false);
   const vertical = arrow && await rv.locator('svg.cg-shapes line').first().evaluate(l => l.getAttribute('x1') === l.getAttribute('x2'));
   check(who, arrow && vertical, 'and draws an arrow for the best move (e2-e4, straight up the board)');
+
+  // Top lines for the position on the board: after g4, Black's best is the mate
+  const lines = () => rv.locator('#rv-lines .rv-line').evaluateAll(ls => ls.map(l => ({ score: l.querySelector('.rv-score').textContent, moves: l.querySelector('.rv-pv').textContent })));
+  await rv.waitForFunction(() => /depth \d+/.test(document.querySelector('#rv-lines .rv-lines-head')?.textContent || ''), null, { timeout: 15000 });
+  const afterG4 = await lines();
+  check(who, afterG4.length >= 1 && afterG4[0].score === '−M1' && afterG4[0].moves.startsWith('2… Qh4#'), 'the top line after g4 is Black’s mate in one', JSON.stringify(afterG4[0]));
+  // Jump to g4 and straight back to the start: the lines must be for the start, never left over from g4
+  await rv.locator('#moves button[data-ply="3"]').click();
+  await rv.locator('#first').click();
+  await rv.waitForFunction(() => /depth (1[0-9]|[5-9])\b/.test(document.querySelector('#rv-lines .rv-lines-head')?.textContent || ''), null, { timeout: 15000 });
+  const atStart = await lines();
+  const legalFirst = new Set(new Chess().moves());
+  const firsts = atStart.map(l => l.moves.replace(/^1\.\s+/, '').split(' ')[0]);
+  check(who, atStart.length === 3 && firsts.every(m => legalFirst.has(m)) && atStart.every(l => /^[+−]?\d+\.\d$|^0\.0$/.test(l.score)),
+    'at the start: three lines, each beginning with a legal first move and a normal score', JSON.stringify(atStart.map(l => `${l.score} ${l.moves}`)));
+  await rv.locator('#moves button[data-ply="3"]').click();
   await rv.locator('#last').click();
   const last = (await rv.locator('#rv-verdict').innerText()).replace(/\s+/g, ' ');
   check(who, last === 'Stockfish’s Qh4# was the best move. Checkmate.', 'Qh4# is described as Stockfish’s best move, and checkmate', JSON.stringify(last));
@@ -253,6 +270,15 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   check(who, await rv.locator('#rv-graph polygon').count() === 1 && await rv.locator('#rv-graph .mark[data-rating="blunder"]').count() === 1, 'the graph draws the game with the blunder marked');
   const wide = await rv.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(who, wide <= 0, 'the bar fits beside the board without widening the page', `${wide}px over`);
+  // The review panel can be taller than the window: it must scroll, not spill over the page
+  const spill = await rv.evaluate(() => {
+    const p = document.querySelector('.panel'), r = p.getBoundingClientRect();
+    const overflowing = p.scrollHeight > p.clientHeight + 1;
+    const scrolls = ['auto', 'scroll'].includes(getComputedStyle(p).overflowY);
+    const lowest = Math.max(...[...p.children].filter(c => !c.hidden).map(c => c.getBoundingClientRect().bottom));
+    return overflowing && !scrolls ? `${Math.round(lowest - r.bottom)}px spills out` : '';
+  });
+  check(who, !spill, 'the review panel never spills out of its box', spill);
   await rv.waitForTimeout(400);   // let pieces finish sliding (0.18 s) and the bar settle (0.3 s), so the picture shows the final position
   await screenshot(rv, `${SHOTS}${who}-review.png`);
   // Saved: a reload keeps the analysis, so reviewing again is instant
