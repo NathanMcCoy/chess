@@ -1,0 +1,31 @@
+[package]
+name = "trainer"
+version = "0.1.0"
+edition = "2024"
+description = "The site's hex bot in Rust: the engine (also built to WebAssembly for the browser) and its trainer"
+license = "GPL-3.0-or-later"
+publish = false
+
+# The engine: rules, search and judgement (src/lib.rs). Built for this PC for the trainer, and to
+# WebAssembly for the browser's bot (node tools/build-engine.mjs -> site/js/bot/hex-engine.wasm).
+[lib]
+name = "engine"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+# The trainer: self-play, learning and matches (src/main.rs, src/train.rs)
+[[bin]]
+name = "trainer"
+path = "src/main.rs"
+
+# For the trainer's weights files (JSON). Only on a developer's PC and in CI: the WebAssembly engine
+# doesn't use it, and trainer/ isn't in the site's image.
+[dependencies]
+serde_json = "1"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+debug = false

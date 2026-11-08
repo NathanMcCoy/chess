@@ -276,7 +276,10 @@ body.online .actions #live-games { display: none; }
 .ob-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
 .online-box button { background: var(--panel-2); border: 1px solid var(--line); border-radius: 8px; padding: 8px 10px; cursor: pointer; }
 .online-box button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); font-weight: 700; }
-body.online .actions #new-game, body.online .actions #undo, body.online .actions #play-friend { display: none; }
+body.online .actions #new-game, body.online .actions #undo, body.online .actions #play-friend, body.online .actions #play-bot { display: none; }
+/* Hex page, against the site's bot: who you're playing, and the way back to two players */
+.bot-row { margin: 0; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px; color: var(--muted); font-size: 0.9rem; }
+.bot-row[hidden] { display: none; }
 
 /* The "Play a friend" box */
 .fr-help { color: var(--muted); font-size: 0.9rem; }

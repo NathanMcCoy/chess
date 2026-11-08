@@ -8,9 +8,55 @@ import { Chess } from '../../vendor/chess.js';
 const UCI = /^[a-h][1-8][a-h][1-8][qrbn]?$/;
 const toMove = uci => ({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] });
 
+// --- For bots: fast play (see index.js). A position is its FEN; one chess.js board is loaded with
+// each in turn. Cell i is file + 8 * (rank - 1): a1 is 0, h8 is 63.
+const board = new Chess();
+let loaded = null;   // the FEN on `board` now: a search asks several things of each position in a row
+const use = fen => { if (fen !== loaded) { board.load(fen, { skipValidation: true }); loaded = fen; } return board; };
+const engine = {
+  // Nothing judged beyond where the pieces stand, for now: square chess has Stockfish
+  extraNames: [],
+  extras: () => [],
+  // How much material is left (knights and bishops 1, rooks 2, queens 4; 24 at the start)
+  phase: fen => {
+    let n = 0;
+    for (const ch of fen.split(' ')[0]) n += { n: 1, b: 1, r: 2, q: 4 }[ch.toLowerCase()] || 0;
+    return Math.min(1, n / 24);
+  },
+  cells: 64,
+  mirror: i => (i % 8) + 8 * (7 - Math.floor(i / 8)),
+  // How far up the board for White (rank 1 is 0, rank 8 is 1), and how near the middle (1 in it)
+  cellInfo: i => [Math.floor(i / 8) / 7, 1 - (Math.max(Math.abs((i % 8) - 3.5), Math.abs(Math.floor(i / 8) - 3.5)) - 0.5) / 3],
+  from: state => { try { return new Chess(state).fen(); } catch { return null; } },
+  state: fen => fen,
+  moves: fen => use(fen).moves({ verbose: true }),
+  play: (fen, m) => { const b = use(fen); b.move({ from: m.from, to: m.to, promotion: m.promotion }); return (loaded = b.fen()); },
+  text: m => m.from + m.to + (m.promotion || ''),
+  turn: fen => fen.split(' ')[1],
+  key: fen => fen.split(' ').slice(0, 4).join(' '),
+  inCheck: fen => use(fen).inCheck(),
+  captured: (fen, m) => (m.captured ? m.captured.toUpperCase() : null),
+  promotion: m => (m.promotion ? m.promotion.toUpperCase() : null),
+  pieces: fen => {
+    const out = [];
+    fen.split(' ')[0].split('/').forEach((row, k) => {
+      let file = 0;
+      for (const ch of row) {
+        if (/\d/.test(ch)) { file += Number(ch); continue; }
+        out.push([ch.toUpperCase(), file + 8 * (7 - k), ch === ch.toUpperCase() ? 'w' : 'b']);
+        file++;
+      }
+    });
+    return out;
+  },
+  drawn: fen => Number(fen.split(' ')[4]) >= 100 || use(fen).isInsufficientMaterial(),
+  noMoves: fen => (use(fen).inCheck() ? { winner: fen.split(' ')[1] === 'w' ? 'b' : 'w', reason: 'checkmate' } : { winner: null, reason: 'stalemate' }),
+};
+
 export default {
   id: 'chess',
   name: 'Chess',
+  engine,
 
   start: () => new Chess().fen(),
 
