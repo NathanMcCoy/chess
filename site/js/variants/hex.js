@@ -267,5 +267,11 @@ export default {
   // For the board drawing (and the tests): the cells, and the cells a promotion happens on
   geometry: { files: FILES, cells: CELLS.map(c => ({ ...c })), last: { w: [...LAST.w].map(i => CELLS[i].name), b: [...LAST.b].map(i => CELLS[i].name) } },
   inCheck: state => { const s = parse(state); return !!s && inCheck(s); },
+  // Every piece on the board, as { cell: piece }, for drawing it
+  pieces: state => {
+    const s = parse(state), out = {};
+    if (s) s.board.forEach((p, i) => { if (p) out[CELLS[i].name] = p; });
+    return out;
+  },
   pieceAt: (state, name) => { const s = parse(state); return s && BY_NAME.has(name) ? s.board[BY_NAME.get(name)] : null; },
 };

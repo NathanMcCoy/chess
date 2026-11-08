@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { start } from '../server/server.mjs';   // the real server, as deployed
 import { Chess } from '../site/vendor/chess.js';   // to check that suggested moves are legal
+import hex from '../site/js/variants/hex.js';      // to set up hex positions
 
 const SHOTS = fileURLToPath(new URL('./shots/', import.meta.url));
 mkdirSync(SHOTS, { recursive: true });
@@ -591,27 +592,175 @@ async function screenshot(page, path) {
   try { await page.screenshot({ path }); await page.waitForTimeout(100); } finally { page.shooting = false; }
 }
 
-async function onDevice(name) {
-  const { engine, device, mouse } = DEVICES[name];
-  const browser = await engine.launch();
-  const context = await browser.newContext({ ...device, baseURL: BASE, acceptDownloads: true });
+// --- Hexagonal chess (/hex) -------------------------------------------------------------------------
+const HEX_SAVE = 'chess.hex.v1';
+const hexLen = f => hex.geometry.cells.filter(c => c.file === f).length;
+// A hex position from { cell: piece }, as in tests/hex.test.mjs
+const hexPosition = (pieces, turn = 'w') => [...hex.geometry.files].map(f => {
+  let out = '', empty = 0;
+  for (let rank = 1; rank <= hexLen(f); rank++) {
+    const p = pieces[f + rank];
+    if (!p) { empty++; continue; }
+    if (empty) { out += empty; empty = 0; }
+    out += p;
+  }
+  return out + (empty || '');
+}).join('/') + ` ${turn} - 0 1`;
+async function hexCell(page, name) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+  const b = await page.locator(`#hexboard polygon[data-cell="${name}"]`).boundingBox();
+  return { x: b.x + b.width / 2, y: b.y + b.height / 2 };
+}
+async function hexTap(page, name, touch) {
+  const { x, y } = await hexCell(page, name);
+  if (touch) await page.touchscreen.tap(x, y); else await page.mouse.click(x, y);
+  await page.waitForTimeout(50);   // a person's pace, as for square chess
+}
+const hexMove = async (page, from, to, touch) => { await hexTap(page, from, touch); await hexTap(page, to, touch); };
+const hexMoves = page => page.locator('#moves button').allInnerTexts();
+async function hexSeed(page, start, extra = {}) {
+  await page.evaluate(([k, v]) => localStorage.setItem(k, JSON.stringify(v)), [HEX_SAVE, { variant: 'hex', start, moves: [], ...extra }]);
+  await page.reload();
+  await page.locator('.hex-pieces piece').first().waitFor();
+}
+
+async function hexFlow(page, who, { touch, mouse }) {
+  await page.goto('/');
+  check(who, (await page.locator('a[href="/hex"]').count()) === 1, 'the chess page links to hexagonal chess');
+  await page.goto('/hex');
+  await page.locator('.hex-pieces piece').first().waitFor();
+  check(who, (await page.locator('#hexboard polygon[data-cell]').count()) === 91, 'the hex board has 91 cells');
+  check(who, (await page.locator('.hex-pieces piece').count()) === 36, 'and 36 pieces');
+  check(who, (await status(page)) === 'White to move.', 'White moves first', await status(page));
+  const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+  check(who, over <= 0, 'nothing is wider than the screen', `${over}px over`);
+  const box = await page.locator('#hexboard').boundingBox();
+  check(who, box.width >= 300, 'the board is big enough', `${Math.round(box.width)}×${Math.round(box.height)}`);
+  // Each cell's centre lands on that cell: what a tap there would hit
+  const hits = await page.evaluate(() => [...document.querySelectorAll('#hexboard polygon[data-cell]')].filter(p => {
+    const r = p.getBoundingClientRect();
+    const at = document.elementsFromPoint(r.x + r.width / 2, r.y + r.height / 2).find(e => e.matches('polygon[data-cell]'));
+    return at === p;
+  }).length);
+  check(who, hits === 91, 'every cell is where it’s drawn', `${hits} of 91`);
+
+  // Tapping a piece shows where it can go; a second tap moves it
+  await hexTap(page, 'f5', touch);
+  check(who, JSON.stringify(await page.locator('[data-dest]').evaluateAll(d => d.map(e => e.dataset.dest))) === '["f6"]', 'the f5 pawn can only go to f6 (f7 is taken)');
+  await hexTap(page, 'f6', touch);
+  await hexMove(page, 'e7', 'e6', touch);
+  check(who, JSON.stringify(await hexMoves(page)) === '["f6","e6"]', 'moves are played and named', JSON.stringify(await hexMoves(page)));
+  check(who, (await page.locator('[data-mark="last e6"]').count()) === 1, 'the last move is lit');
+  await hexMove(page, 'f6', 'f7', touch);
+  check(who, (await hexMoves(page)).length === 2, 'a pawn can’t move into a piece');
+
+  // Dragging, with a mouse
+  if (mouse) {
+    await hexTap(page, 'd1', false);
+    const dests = await page.locator('[data-dest]').evaluateAll(d => d.map(e => e.dataset.dest));
+    await hexTap(page, 'd1', false);   // and put it down again
+    const from = await hexCell(page, 'd1'), to = await hexCell(page, dests[0]);
+    await page.mouse.move(from.x, from.y);
+    await page.mouse.down();
+    await page.mouse.move((from.x + to.x) / 2, (from.y + to.y) / 2, { steps: 4 });
+    await page.mouse.move(to.x, to.y, { steps: 4 });
+    await page.mouse.up();
+    await page.waitForTimeout(50);
+    check(who, (await hexMoves(page)).length === 3 && (await hexMoves(page))[2].startsWith('N'), 'a piece can be dragged', JSON.stringify(await hexMoves(page)));
+    await page.locator('#undo').click();
+  }
+
+  await page.reload();
+  await page.locator('.hex-pieces piece').first().waitFor();
+  check(who, JSON.stringify(await hexMoves(page)) === '["f6","e6"]', 'a reload keeps the game');
+  await page.locator('#undo').click();
+  check(who, JSON.stringify(await hexMoves(page)) === '["f6"]' && (await status(page)) === 'Black to move.', 'Take back takes back one move');
+  await page.locator('#first').click();
+  check(who, (await page.locator('.hex-pieces piece[data-cell="f5"]').count()) === 1 && /Looking at the start/.test(await status(page)), 'the first-move button shows the start');
+  await hexTap(page, 'e7', touch);
+  check(who, (await page.locator('[data-dest]').count()) === 0, 'and nothing moves while looking back');
+  await page.locator('#last').click();
+
+  // Turning the board: Black at the bottom, so f7 is drawn below f5
+  await page.locator('#flip').click();
+  const [f5, f7] = [await hexCell(page, 'f5'), await hexCell(page, 'f7')];
+  check(who, f7.y > f5.y && (await page.locator('#bottom-player .name').innerText()) === 'Black', 'Flip board puts Black at the bottom');
+  await page.locator('#flip').click();
+  await page.locator('#auto-turn').check();
+  check(who, (await page.locator('#bottom-player .name').innerText()) === 'Black', 'with "turn the board", whoever is to move is at the bottom');
+  await hexMove(page, 'e7', 'e6', touch);
+  check(who, (await page.locator('#bottom-player .name').innerText()) === 'White', 'and it turns after each move');
+  await page.locator('#auto-turn').uncheck();   // White stays at the bottom for what follows
+
+  // Promotion: four pieces to choose from, and the pawn becomes the one chosen
+  await hexSeed(page, hexPosition({ f10: 'P', b1: 'K', k7: 'k' }));
+  await hexMove(page, 'f10', 'f11', touch);
+  await page.locator('#promotion[open]').waitFor();
+  check(who, (await page.locator('#promotion piece.white').count()) === 4, 'promoting offers four white pieces');
+  await page.locator('#promotion button[data-piece="n"]').click();
+  check(who, JSON.stringify(await hexMoves(page)) === '["f11=N"]' && (await page.locator('.hex-pieces piece[data-cell="f11"].knight').count()) === 1, 'and the pawn becomes a knight');
+
+  // Checkmate, and the result card
+  await hexSeed(page, hexPosition({ a6: 'k', a1: 'K', b4: 'Q' }));
+  await hexMove(page, 'b4', 'c6', touch);
+  await page.locator('#gameover:not([hidden])').waitFor();
+  check(who, (await page.locator('#go-title').innerText()) === 'White wins' && (await page.locator('#go-score').innerText()) === '1–0', 'checkmate ends the game: White wins, 1–0',
+    `${await page.locator('#go-title').innerText()} ${await page.locator('#go-score').innerText()}`);
+  check(who, (await page.locator('[data-mark="check a6"]').count()) === 1, 'with the mated king lit');
+  await page.locator('#go-close').click();
+  check(who, await page.locator('#gameover').isHidden(), 'View the board puts the card away');
+
+  // Stalemate scores ¾ to the side giving it
+  await hexSeed(page, hexPosition({ a6: 'k', a2: 'K', d7: 'Q' }));
+  await hexMove(page, 'a2', 'b4', touch);
+  await page.locator('#gameover:not([hidden])').waitFor();
+  check(who, (await page.locator('#go-title').innerText()) === 'White scores ¾' && (await page.locator('#go-score').innerText()) === '¾–¼', 'stalemate: White scores ¾–¼',
+    `${await page.locator('#go-title').innerText()} ${await page.locator('#go-score').innerText()}`);
+
+  // New game, from the card: no question, as the game is over
+  await page.locator('#go-new').click();
+  check(who, (await page.locator('.hex-pieces piece').count()) === 36 && (await hexMoves(page)).length === 0, 'New game sets the pieces up again');
+  // During a game it asks first, in the page's own box
+  await hexMove(page, 'f5', 'f6', touch);
+  await page.locator('#new-game').click();
+  await page.locator('#confirm[open]').waitFor();
+  await page.locator('#confirm button[value="no"]').click();
+  check(who, (await hexMoves(page)).length === 1, 'and Cancel keeps the game going');
+}
+
+// A page with its errors collected: anything the security policy blocks is a failure, as the live
+// site would break the same way
+async function watchedPage(context) {
   const page = await context.newPage();
   page.setDefaultTimeout(10000);
   const errors = [];
   page.on('pageerror', e => errors.push(e.message));
-  // Anything the security policy blocks is a failure: the live site would break the same way
   await page.addInitScript(() => addEventListener('securitypolicyviolation', e => console.log(`CSP blocked ${e.violatedDirective}: ${e.blockedURI || 'inline'}`)));
   page.on('console', m => { if (!page.shooting && /^CSP blocked|Content Security Policy|Refused to/.test(m.text())) errors.push(m.text()); });
   page.on('dialog', d => { errors.push(`browser popup: ${d.message()}`); d.dismiss(); });
-  try {
-    const freshPage = async () => (await browser.newContext({ ...device, baseURL: BASE })).newPage();
-    await flow(page, name, { touch: !!device.hasTouch, mouse, freshPage });
-    check(name, !errors.length, 'no page errors', errors.join(' | '));
-  } catch (e) {
-    const where = (e.stack.match(/run\.mjs:\d+/) || ['?'])[0];
-    check(name, false, `stopped early at ${where}`, `${e.message.split('\n')[0]}${errors.length ? ` | page errors: ${errors.join(' | ')}` : ''}`);
-    await screenshot(page, `${SHOTS}${name}-failed.png`).catch(() => {});
-  }
+  return { page, errors };
+}
+
+// Square chess and hexagonal chess side by side, each in its own browser context (own saved games)
+async function onDevice(name) {
+  const { engine, device, mouse } = DEVICES[name];
+  const browser = await engine.launch();
+  const run = async (who, test, options) => {
+    const { page, errors } = await watchedPage(await browser.newContext({ ...device, baseURL: BASE, ...options }));
+    try {
+      await test(page, who);
+      check(who, !errors.length, 'no page errors', errors.join(' | '));
+    } catch (e) {
+      const where = (e.stack.match(/run\.mjs:\d+/) || ['?'])[0];
+      check(who, false, `stopped early at ${where}`, `${e.message.split('\n')[0]}${errors.length ? ` | page errors: ${errors.join(' | ')}` : ''}`);
+      await screenshot(page, `${SHOTS}${who.replace(/\W+/g, '-')}-failed.png`).catch(() => {});
+    }
+  };
+  const freshPage = async () => (await browser.newContext({ ...device, baseURL: BASE })).newPage();
+  await Promise.all([
+    run(name, (page, who) => flow(page, who, { touch: !!device.hasTouch, mouse, freshPage }), { acceptDownloads: true }),
+    run(`${name} hex`, (page, who) => hexFlow(page, who, { touch: !!device.hasTouch, mouse })),
+  ]);
   await browser.close();
 }
 

@@ -1,0 +1,97 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Hexagonal chess · pacificfish</title>
+  <meta name="description" content="Gliński's hexagonal chess for two players on one device.">
+  <meta name="theme-color" content="#0d2a3a">
+  <!-- Paths from the site's root: this page answers at both /hex and /hex/ -->
+  <link rel="stylesheet" href="/vendor/chessground.base.css">
+  <link rel="stylesheet" href="/vendor/chessground.cburnett.css">
+  <link rel="stylesheet" href="/css/app.css">
+</head>
+<body class="hex-page">
+  <header class="top">
+    <a class="brand" href="https://pacificfish.ca/">pacificfish <span>chess</span></a>
+    <a class="variant-link" href="/">Square chess</a>
+  </header>
+
+  <main class="layout">
+    <section class="play">
+      <div class="player" id="top-player"><span class="name"></span></div>
+      <div class="board-box">
+        <div id="hexboard"></div>
+        <div id="gameover" class="gameover" hidden>
+          <div class="go-card" role="dialog" aria-labelledby="go-title" aria-describedby="go-reason">
+            <p class="go-score" id="go-score"></p>
+            <h2 id="go-title"></h2>
+            <p class="go-reason" id="go-reason"></p>
+            <div class="go-buttons">
+              <button type="button" id="go-new" class="primary">New game</button>
+              <button type="button" id="go-close">View the board</button>
+            </div>
+          </div>
+        </div>
+        <dialog id="promotion" class="promotion" aria-label="Promote to">
+          <div class="cg-wrap promo-pieces">
+            <button type="button" data-piece="q" aria-label="Queen"><piece class="queen"></piece></button>
+            <button type="button" data-piece="r" aria-label="Rook"><piece class="rook"></piece></button>
+            <button type="button" data-piece="b" aria-label="Bishop"><piece class="bishop"></piece></button>
+            <button type="button" data-piece="n" aria-label="Knight"><piece class="knight"></piece></button>
+          </div>
+        </dialog>
+      </div>
+      <div class="player" id="bottom-player"><span class="name"></span></div>
+    </section>
+
+    <aside class="panel">
+      <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <div class="nav" role="group" aria-label="Look through the game">
+        <button type="button" id="first" aria-label="First move" title="First move (Home)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
+        <button type="button" id="prev" aria-label="Previous move" title="Previous move (←)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 5v14L6 12z"/></svg></button>
+        <button type="button" id="next" aria-label="Next move" title="Next move (→)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 5v14l11-7z"/></svg></button>
+        <button type="button" id="last" aria-label="Latest move" title="Latest move (End)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 5h2v14h-2zM4 5v14l11-7z"/></svg></button>
+      </div>
+
+      <ol id="moves" class="moves" aria-label="Moves"></ol>
+
+      <div class="actions">
+        <button type="button" id="new-game" class="primary">New game</button>
+        <button type="button" id="undo">Take back</button>
+        <button type="button" id="flip">Flip board</button>
+      </div>
+      <label class="fr-same"><input type="checkbox" id="auto-turn"> Turn the board to whoever’s move it is</label>
+
+      <p class="hint">Two players on one device. Tap a piece, then where it goes, or drag it.</p>
+      <details class="hex-rules">
+        <summary>How Gliński’s hexagonal chess differs</summary>
+        <ul>
+          <li>Rooks move straight out through a cell’s six sides; bishops through its six corners, so each side has three bishops, one for each colour of cell.</li>
+          <li>The queen does both, the king one step either way, and the knight jumps to the 12 nearest cells that aren’t on one of the queen’s lines.</li>
+          <li>Pawns move straight up the file and capture one cell forward at 60°. From their starting cells they may move two. They promote on the last cell of their file.</li>
+          <li>There’s no castling. Stalemate isn’t an even draw: the side that gives it scores ¾, the other ¼.</li>
+        </ul>
+      </details>
+    </aside>
+  </main>
+
+  <dialog id="confirm" class="box">
+    <form method="dialog">
+      <p id="confirm-text"></p>
+      <div class="row">
+        <button type="submit" value="no">Cancel</button>
+        <button type="submit" value="yes" class="primary" id="confirm-yes">Yes</button>
+      </div>
+    </form>
+  </dialog>
+
+  <footer class="foot">
+    Your game is kept in this browser only.
+    <a href="https://github.com/NathanMcCoy/chess">Source</a> (GPL-3.0)
+  </footer>
+
+  <script type="module" src="/js/hexgame.js"></script>
+</body>
+</html>
