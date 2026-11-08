@@ -1,7 +1,9 @@
 // The hexagonal chess page (/hex): Gliński's rules (variants/hex.js) on the hex board
-// (boards/hexboard.js), for two players on one device. The game is kept in this browser.
+// (boards/hexboard.js). Two players on one device (kept in this browser), or a game against a person
+// elsewhere (online.js talks to the server, as on the chess page): /hex?g=<id> opens one.
 import hex from './variants/hex.js';
 import { hexBoard } from './boards/hexboard.js';
+import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath } from './online.js';
 
 const SAVE = 'chess.hex.v1';
 const NAME = { w: 'White', b: 'Black' };
@@ -13,11 +15,18 @@ let game = { start: hex.start(), moves: [] };
 let played = null;          // hex.replay of the game: states, names, result
 let viewing = null;         // the move number being looked at, or null for the latest position
 let orientation = 'w';      // who's at the bottom
-let autoTurn = false;       // turn the board to whoever's move it is
+let autoTurn = false;       // turn the board to whoever's move it is (two on one device)
 let cardClosed = false;     // the result card was put away to look at the board
+// A game against a person: { id, you: 'w' | 'b' | null (watching), view (the server's), at, stop, problem }.
+// Your own two-player game stays saved meanwhile, and comes back when you leave.
+let online = null;
+let clockTimer = null;
+let notice = null;          // a one-off message for the status line
 
-// --- Kept in this browser ----------------------------------------------------------------------
+// --- Kept in this browser (the two-player game only) -------------------------------------------
 function load() {
+  game = { start: hex.start(), moves: [] };
+  orientation = 'w';
   try {
     const s = JSON.parse(localStorage.getItem(SAVE) || 'null');
     if (!s || s.variant !== 'hex' || typeof s.start !== 'string' || !Array.isArray(s.moves)) return;
@@ -29,26 +38,52 @@ function load() {
   } catch { /* storage blocked or the save isn't JSON: a new game */ }
 }
 function save() {
+  if (online) return;
   try { localStorage.setItem(SAVE, JSON.stringify({ variant: 'hex', start: game.start, moves: game.moves, orientation, autoTurn, cardClosed })); } catch { /* storage blocked */ }
 }
 
-// --- The result ---------------------------------------------------------------------------------
+// --- Who's who, and how it ended ----------------------------------------------------------------
+// "your friend" in a game by link, "your opponent" in one from Live games (who may be a stranger)
+const them = () => (online?.view.listed ? 'your opponent' : 'your friend');
+const Them = () => them()[0].toUpperCase() + them().slice(1);
+function sideName(c) {
+  if (!online) return NAME[c];
+  if (c === online.you) return 'You';
+  const p = online.view.players[c];
+  if (online.you) return p.name || (p.joined ? Them() : `Waiting for ${them()}…`);
+  return p.name || (p.joined ? `Guest (${NAME[c]})` : `Waiting (${NAME[c]})`);
+}
+
 const frac = p => ({ 0: '0', 0.25: '¼', 0.5: '½', 0.75: '¾', 1: '1' })[p] ?? String(p);
-function describe(r) {
+// The result, said from your side when you're playing: { score, title, text, outcome }
+function describe(r, you = null) {
   const points = r.points || (r.winner ? { [r.winner]: 1, [other(r.winner)]: 0 } : { w: 0.5, b: 0.5 });
   const score = `${frac(points.w)}–${frac(points.b)}`;
+  const wins = w => (!you ? `${NAME[w]} wins` : w === you ? 'You win!' : `${Them()} wins`);
+  const loser = r.winner && other(r.winner);
+  const giver = points.w > points.b ? 'w' : 'b';
   const texts = {
-    checkmate: () => [`${NAME[r.winner]} wins`, 'Checkmate.'],
-    stalemate: () => {
-      const giver = points.w > points.b ? 'w' : 'b';
-      return [`${NAME[giver]} scores ¾`, `Stalemate: ${NAME[other(giver)]} can’t move. In Gliński’s chess that scores ¾ to the side that gave it and ¼ to the other.`];
-    },
+    checkmate: () => [wins(r.winner), 'Checkmate.'],
+    resign: () => [wins(r.winner), loser === you ? 'You resigned.' : you ? `${Them()} resigned.` : `${NAME[loser]} resigned.`],
+    time: () => [wins(r.winner), loser === you ? 'Your time ran out.' : you ? `${Them()} ran out of time.` : `${NAME[loser]} ran out of time.`],
+    stalemate: () => [!you ? `${NAME[giver]} scores ¾` : giver === you ? 'You score ¾' : `${Them()} scores ¾`,
+      `Stalemate: ${NAME[other(giver)]} can’t move. In Gliński’s chess that scores ¾ to the side that gave it and ¼ to the other.`],
+    agreement: () => ['Draw', 'A draw, by agreement.'],
     material: () => ['Draw', 'Neither side has enough pieces left to checkmate.'],
     repetition: () => ['Draw', 'A draw by repetition: the same position came up three times.'],
     fifty: () => ['Draw', 'A draw by the fifty-move rule.'],
   };
   const [title, text] = (texts[r.reason] || (() => ['Game over', '']))();
-  return { score, title, text, outcome: r.winner ? 'win' : 'draw' };
+  const mine = you ? points[you] : null;
+  const outcome = mine === null ? (r.winner ? 'win' : 'draw') : mine > 0.5 ? 'win' : mine < 0.5 ? 'loss' : 'draw';
+  return { score, title, text, outcome };
+}
+// How the game shown ended, or null while it's going on
+function outcome() {
+  if (!online) return played.result ? describe(played.result) : null;
+  const v = online.view;
+  if (v.status === 'aborted') return { score: '*', title: 'Called off', text: 'The game was called off.', outcome: 'draw' };
+  return v.status === 'over' && v.result ? describe(v.result, online.you) : null;
 }
 
 // --- Drawing it all -----------------------------------------------------------------------------
@@ -56,32 +91,38 @@ const board = hexBoard($('hexboard'), { geometry: hex.geometry, onMove: (from, t
 
 function render() {
   played = hex.replay(game.start, game.moves);
-  const n = game.moves.length;
+  if (played.error) played = hex.replay(game.start, []);   // can't happen: the server checks every move
+  const n = played.states.length - 1;
   const at = viewing ?? n;
   const state = played.states[at];
-  const live = at === n && !played.result;
   const turn = hex.turn(state);
   const pieces = hex.pieces(state);
+  const over = outcome();
+  const live = at === n && !over;
+  // Who may move now: either side on one device; online, only you, on your turn
+  const canMove = live && (!online || (online.view.status === 'playing' && online.you === turn));
 
   const dests = {};
-  if (live) for (const m of hex.legal(state)) {
+  if (canMove) for (const m of hex.legal(state)) {
     const [, from, to] = m.match(MOVE);
     (dests[from] ||= []).includes(to) || dests[from].push(to);
   }
   const last = at > 0 ? game.moves[at - 1].match(MOVE) : null;
-  const check = hex.inCheck(state) ? Object.keys(pieces).find(c => pieces[c] === (turn === 'w' ? 'K' : 'k')) : null;
+  const inCheck = hex.inCheck(state);
+  const check = inCheck ? Object.keys(pieces).find(c => pieces[c] === (turn === 'w' ? 'K' : 'k')) : null;
   board.set({ pieces, dests, lastMove: last ? [last[1], last[2]] : null, check, orientation });
 
-  // Status, and the players either side of the board
+  // The status line, and the players either side of the board
   const status = $('status');
-  status.classList.toggle('over', !!played.result && at === n);
-  if (at < n) status.textContent = at === 0 ? 'Looking at the start. → to go on.' : `Looking at move ${Math.ceil(at / 2)}${at % 2 ? '' : '…'} ${played.names[at - 1]}.`;
-  else if (played.result) status.textContent = `${describe(played.result).title}. ${describe(played.result).text}`;
-  else status.textContent = `${NAME[turn]} to move${check ? ': in check!' : '.'}`;
+  status.classList.toggle('over', !!over && at === n);
+  status.textContent = notice ?? (at < n
+    ? (at === 0 ? 'Looking at the start. → to go on.' : `Looking at move ${Math.ceil(at / 2)}${at % 2 ? '' : '…'} ${played.names[at - 1]}.`)
+    : online ? onlineStatus(over, turn, inCheck)
+      : over ? `${over.title}. ${over.text}` : `${NAME[turn]} to move${inCheck ? ': in check!' : '.'}`);
   for (const [id, side] of [['top-player', other(orientation)], ['bottom-player', orientation]]) {
     const row = $(id);
-    row.querySelector('.name').textContent = NAME[side];
-    row.classList.toggle('to-move', live && turn === side);
+    row.querySelector('.name').textContent = sideName(side);
+    row.classList.toggle('to-move', live && turn === side && (!online || online.view.status === 'playing'));
   }
 
   // The moves, two to a row, each one a button to look at that position
@@ -104,10 +145,10 @@ function render() {
     }
     list.append(li);
   }
-  if (played.result) {
+  if (over) {
     const li = document.createElement('li');
     li.className = 'result';
-    li.textContent = describe(played.result).score;
+    li.textContent = over.score;
     list.append(li);
   }
   list.querySelector('.current')?.scrollIntoView({ block: 'nearest' });
@@ -119,14 +160,16 @@ function render() {
 
   // The result card, over the board, until it's put away
   const box = $('gameover');
-  box.hidden = !(played.result && at === n && !cardClosed);
+  box.hidden = !(over && at === n && !cardClosed);
   if (!box.hidden) {
-    const d = describe(played.result);
-    box.querySelector('.go-card').className = `go-card ${d.outcome}`;
-    $('go-score').textContent = d.score;
-    $('go-title').textContent = d.title;
-    $('go-reason').textContent = d.text;
+    box.querySelector('.go-card').className = `go-card ${over.outcome}`;
+    $('go-score').textContent = over.score;
+    $('go-title').textContent = over.title;
+    $('go-reason').textContent = over.text;
   }
+  $('go-new').hidden = !!online;
+  renderOnline();
+  renderClocks();
   save();
 }
 
@@ -142,11 +185,145 @@ async function play(from, to) {
     if (!piece) return render();
     move = from + to + piece;
   }
-  game.moves = [...game.moves, move];
+  game = { ...game, moves: [...game.moves, move] };
   viewing = null;
   cardClosed = false;
+  notice = null;
+  if (online) { online.problem = null; render(); return sendMove(move); }
   if (autoTurn) orientation = hex.turn(hex.replay(game.start, game.moves).states.at(-1));
   render();
+}
+
+// --- Games against people -----------------------------------------------------------------------
+// join: you chose to play it (from Live games), so there's no invitation to accept first
+async function openOnline(id, { join = false } = {}) {
+  leaveOnline();
+  let v;
+  try {
+    v = await getGame(id);
+  } catch (e) {
+    return backHere(false, e.status === 404 ? 'That game link doesn’t work: there’s no such game.' : `Couldn’t open that game: ${e.message}`);
+  }
+  // Square chess is played on the chess page
+  if (v.variant !== 'hex') return location.replace(gamePath(id, v.variant) + (join ? '&join=1' : ''));
+  if (!v.you && v.status === 'waiting') {
+    const side = v.players.w.joined ? 'b' : 'w';
+    const yours = timeText(v.times[side]), theirs = timeText(v.times[other(side)]);
+    const same = yours === theirs ? `${yours} each` : `you ${yours}, them ${theirs}`;
+    if (!join && !(await confirmBox(`You’re invited to play ${NAME[side]} in hexagonal chess (${same}). Play?`, 'Play'))) return backHere(true);
+    try {
+      await joinGame(id);
+      v = await getGame(id);
+    } catch (e) {
+      return backHere(true, `Couldn’t join that game: ${e.message}`);
+    }
+  }
+  online = { id, you: v.you, view: v, at: performance.now(), stop: null, problem: null };
+  document.body.classList.add('online');
+  orientation = v.you === 'b' ? 'b' : 'w';
+  cardClosed = false;
+  viewing = null;
+  notice = null;
+  online.stop = follow(id, applyView);
+  applyView(v);
+  clockTimer = setInterval(renderClocks, 200);
+}
+
+// The game as the server sent it
+function applyView(v) {
+  if (!online || v.id !== online.id) return;
+  const wasOver = ['over', 'aborted'].includes(online.view.status);
+  online.view = v;
+  online.at = performance.now();
+  if (v.you) online.you = v.you;   // the stream's copy says null: it's the same for everyone
+  game = { start: v.start, moves: v.moves };
+  if (viewing !== null && viewing > v.moves.length) viewing = null;
+  if (['over', 'aborted'].includes(v.status) && !wasOver) cardClosed = false;
+  render();
+}
+
+// Your move is on the board already; if the server refuses it (say the game ended just then), the
+// board goes back to the server's game
+async function sendMove(move) {
+  const id = online.id;
+  try {
+    applyView(await act(id, 'move', { move }));
+  } catch (e) {
+    if (!online || online.id !== id) return;
+    online.problem = e.message;
+    try { applyView(await getGame(id)); } catch { render(); }
+  }
+}
+
+async function onlineAction(action, ask) {
+  if (!online) return;
+  if (ask && !(await confirmBox(ask[0], ask[1]))) return;
+  try { applyView(await act(online.id, action)); } catch (e) { online.problem = e.message; render(); }
+}
+
+function leaveOnline() {
+  if (!online) return;
+  online.stop?.();
+  clearInterval(clockTimer);
+  online = null;
+  document.body.classList.remove('online');
+}
+
+// Back to your own game on this device, as it was saved
+function backHere(changeAddress = true, message = null) {
+  leaveOnline();
+  if (changeAddress && location.search) history.pushState(null, '', location.pathname);
+  load();
+  viewing = null;
+  notice = message;
+  render();
+}
+
+function onlineStatus(over, turn, inCheck) {
+  const v = online.view, you = online.you;
+  if (online.problem) return online.problem;
+  if (over) return `${over.title}. ${over.text}`;
+  if (v.status === 'waiting') {
+    if (!you) return 'Waiting for a second player.';
+    return v.listed ? 'Waiting for an opponent: your game is in Live games. You can also send the link below.' : 'Waiting for your friend: send them the link below.';
+  }
+  let text = you ? (turn === you ? (inCheck ? 'Check! Your move.' : 'Your move.') : `${Them()}’s move.`) : `${NAME[turn]} to move.`;
+  if (you && v.drawOffer === other(you)) text = `${Them()} offers a draw.`;
+  else if (you && v.drawOffer === you) text += ' You’ve offered a draw.';
+  return text;
+}
+
+function renderOnline() {
+  const box = $('online-box');
+  box.hidden = !online;
+  $('auto-turn-row').hidden = !!online;
+  if (!online) return;
+  const v = online.view, you = online.you, playing = v.status === 'playing';
+  $('ob-link-row').hidden = !(you && v.status === 'waiting');
+  $('ob-link').value = `${location.origin}${gamePath(online.id, 'hex')}`;
+  const theirOffer = you && playing && v.drawOffer === other(you);
+  $('ob-draw').hidden = !(you && playing) || theirOffer;
+  $('ob-draw').disabled = v.drawOffer === you;
+  $('ob-draw').textContent = v.drawOffer === you ? 'Draw offered' : 'Offer draw';
+  $('ob-accept').hidden = $('ob-decline').hidden = !theirOffer;
+  $('ob-abort').hidden = !(you && (v.status === 'waiting' || (playing && v.moves.length < 2)));
+  $('ob-resign').hidden = !(you && playing && v.moves.length >= 2);
+}
+
+// Each side's clock, counting down between the server's updates from what it last said (by this
+// device's own timer, so its clock being off doesn't matter)
+function renderClocks() {
+  for (const [id, side] of [['bottom-player', orientation], ['top-player', other(orientation)]]) {
+    const el = $(id).querySelector('.clock');
+    el.hidden = !online;
+    if (!online) continue;
+    const v = online.view;
+    const running = v.running === side;
+    const ms = v.clocks[side] - (running ? performance.now() - online.at : 0);
+    el.textContent = clockText(ms);
+    el.classList.toggle('running', running);
+    el.classList.toggle('low', ms < 20_000 && v.status === 'playing');
+  }
 }
 
 // --- Boxes --------------------------------------------------------------------------------------
@@ -184,6 +361,7 @@ async function newGame() {
   game = { start: hex.start(), moves: [] };
   viewing = null;
   cardClosed = false;
+  notice = null;
   if (autoTurn) orientation = 'w';
   render();
 }
@@ -193,7 +371,8 @@ $('new-game').onclick = newGame;
 $('go-new').onclick = newGame;
 $('go-close').onclick = () => { cardClosed = true; render(); };
 $('undo').onclick = () => {
-  game.moves = game.moves.slice(0, -1);
+  if (online) return;
+  game = { ...game, moves: game.moves.slice(0, -1) };
   viewing = null;
   cardClosed = false;
   if (autoTurn) orientation = hex.turn(hex.replay(game.start, game.moves).states.at(-1));
@@ -216,5 +395,54 @@ document.addEventListener('keydown', e => {
   if (keys[e.key]) { e.preventDefault(); keys[e.key](); }
 });
 
+$('play-friend').onclick = async () => {
+  const settings = await askForGame('hex');
+  if (!settings) return;
+  try {
+    const r = await createGame(settings);
+    if (settings.variant !== 'hex') return location.assign(gamePath(r.id, settings.variant));
+    history.pushState(null, '', gamePath(r.id, 'hex'));
+    await openOnline(r.id);
+  } catch (e) {
+    notice = `Couldn’t make the game: ${e.message}`;
+    render();
+  }
+};
+$('live-games').onclick = () => openLobby((id, how, variant) => {
+  if (variant !== 'hex') return location.assign(gamePath(id, variant) + (how === 'play' ? '&join=1' : ''));
+  history.pushState(null, '', gamePath(id, 'hex'));
+  openOnline(id, { join: how === 'play' });
+});
+$('ob-copy').onclick = () => {
+  const done = () => { $('ob-copy').textContent = 'Copied!'; setTimeout(() => { $('ob-copy').textContent = 'Copy link'; }, 1500); };
+  navigator.clipboard?.writeText($('ob-link').value).then(done, () => $('ob-link').select()) ?? $('ob-link').select();
+};
+$('ob-draw').onclick = () => onlineAction('draw');
+$('ob-accept').onclick = () => onlineAction('draw');
+$('ob-decline').onclick = () => onlineAction('decline');
+$('ob-abort').onclick = () => onlineAction('abort', ['Call off this game? It won’t count for either side.', 'Call off']);
+$('ob-resign').onclick = () => onlineAction('resign', [`Resign this game? ${Them()} will be given the win.`, 'Resign']);
+$('ob-leave').onclick = async () => {
+  if (online && online.you && online.view.status === 'playing'
+    && !(await confirmBox('Leave this game? It goes on without you: your clock keeps running. You can come back by its link.', 'Leave'))) return;
+  backHere();
+};
+addEventListener('popstate', () => {
+  const id = new URLSearchParams(location.search).get('g');
+  if (id && (!online || online.id !== id)) openOnline(id);
+  else if (!id && online) backHere(false);
+});
+
+// --- Starting up --------------------------------------------------------------------------------
 load();
 render();
+const params = new URLSearchParams(location.search);
+if (params.get('g')) {
+  const join = params.get('join') === '1';
+  if (join) history.replaceState(null, '', gamePath(params.get('g'), 'hex'));   // a reload shouldn't join again
+  openOnline(params.get('g'), { join });
+} else if (params.has('new')) {
+  // "New game" on the chess page, with hexagonal chess chosen
+  history.replaceState(null, '', location.pathname);
+  newGame();
+}

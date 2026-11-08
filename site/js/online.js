@@ -64,9 +64,12 @@ export function timeText({ base, inc }) {
   return `${Number.isInteger(min) ? min : min.toFixed(1)}+${inc / 1000}`;
 }
 
-// The "Play a friend" box: colour and each side's time control. Resolves with what to send, or null.
-export function askForGame() {
+// The "Play a friend" box: which game, colour and each side's time control. Resolves with what to
+// send, or null. `variant` is the game ticked when it opens (the page's own).
+export function askForGame(variant = 'chess') {
   const box = $('friend-dialog');
+  const pickVariant = box.querySelector(`input[name=fr-variant][value="${variant}"]`);
+  if (pickVariant) pickVariant.checked = true;
   const same = $('fr-same');
   const field = id => $(id);
   const sync = () => {
@@ -91,6 +94,7 @@ export function askForGame() {
       if (box.returnValue !== 'create') return resolve(null);
       const num = id => Number(field(id).value);
       resolve({
+        variant: box.querySelector('input[name=fr-variant]:checked')?.value || variant,
         listed: $('fr-listed').checked,
         color: box.querySelector('input[name=fr-side]:checked').value,
         times: { w: { minutes: num('fr-w-min'), increment: num('fr-w-inc') }, b: { minutes: num('fr-b-min'), increment: num('fr-b-inc') } },
@@ -103,9 +107,13 @@ export function askForGame() {
 // Both sides' times: "10+5 each", or "White 3+2, Black 10+5"
 const bothTimes = t => (timeText(t.w) === timeText(t.b) ? `${timeText(t.w)} each` : `White ${timeText(t.w)}, Black ${timeText(t.b)}`);
 const SIDE = { w: 'White', b: 'Black' };
+// Which game it is, before its details: only hexagonal chess says so, as most games are chess
+const kind = g => (g.variant === 'hex' ? 'Hexagonal · ' : '');
+// Where a game is played: chess on the main page, hexagonal chess on /hex
+export const gamePath = (id, variant) => `${variant === 'hex' ? '/hex' : '/'}?g=${encodeURIComponent(id)}`;
 
 // The Live games box: open games (Play) and games being played (Watch), kept up to date from the
-// server's live list while it's open. onPick(id, how) is called with 'play' or 'watch'.
+// server's live list while it's open. onPick(id, how, variant) is called with 'play' or 'watch'.
 export function openLobby(onPick) {
   const box = $('lobby');
   const row = (id, who, detail, label, pick) => {
@@ -125,24 +133,24 @@ export function openLobby(onPick) {
     return li;
   };
   const show = ({ open, live }) => {
-    $('lobby-open').replaceChildren(...open.map(g => row(g.id, g.by, `You’d play ${SIDE[g.side]} · ${bothTimes(g.times)}`, 'Play', () => done(g.id, 'play'))));
+    $('lobby-open').replaceChildren(...open.map(g => row(g.id, g.by, `${kind(g)}You’d play ${SIDE[g.side]} · ${bothTimes(g.times)}`, 'Play', () => done(g, 'play'))));
     $('lobby-live').replaceChildren(...live.map(g => row(g.id, `${g.players.w} vs ${g.players.b}`,
-      `${bothTimes(g.times)} · ${g.moves} move${g.moves === 1 ? '' : 's'}, ${SIDE[g.turn]} to move`, 'Watch', () => done(g.id, 'watch'))));
+      `${kind(g)}${bothTimes(g.times)} · ${g.moves} move${g.moves === 1 ? '' : 's'}, ${SIDE[g.turn]} to move`, 'Watch', () => done(g, 'watch'))));
     $('lobby-open-none').hidden = open.length > 0;
     $('lobby-live-none').hidden = live.length > 0;
   };
   const es = new EventSource('/api/lobby/events');
   es.addEventListener('lobby', e => { try { show(JSON.parse(e.data)); } catch { /* the next one fixes it */ } });
   let picked = null;
-  const done = (id, how) => { picked = { id, how }; box.close(); };
+  const done = (g, how) => { picked = { id: g.id, how, variant: g.variant || 'chess' }; box.close(); };
   $('lobby-close').onclick = () => box.close();
-  box.addEventListener('close', () => { es.close(); if (picked) onPick(picked.id, picked.how); }, { once: true });
+  box.addEventListener('close', () => { es.close(); if (picked) onPick(picked.id, picked.how, picked.variant); }, { once: true });
   show({ open: [], live: [] });
   box.showModal();
 }
 
 export async function createGame(settings) {
-  const r = await call('/api/games', { variant: 'chess', ...settings });
+  const r = await call('/api/games', { variant: 'chess', ...settings });   // settings.variant, if given, wins
   keepSeat(r.id, r.seat, r.color);
   return r;
 }

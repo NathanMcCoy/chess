@@ -134,15 +134,23 @@
   <dialog id="new-dialog" class="box">
     <form method="dialog">
       <h2>New game</h2>
-      <fieldset class="sides">
-        <legend>Play as</legend>
-        <label><input type="radio" name="side" value="w" checked> White</label>
-        <label><input type="radio" name="side" value="b"> Black</label>
-        <label><input type="radio" name="side" value="random"> Random</label>
+      <fieldset class="sides variants">
+        <legend>Game</legend>
+        <label><input type="radio" name="variant" value="chess" checked> Chess, against Stockfish</label>
+        <label><input type="radio" name="variant" value="hex"> Hexagonal chess, two players on this device</label>
       </fieldset>
-      <label class="level">Stockfish level <output id="level-name"></output>
-        <input type="range" id="level" name="level" min="1" max="10" step="1" value="3">
-      </label>
+      <div id="nd-stockfish">
+        <fieldset class="sides">
+          <legend>Play as</legend>
+          <label><input type="radio" name="side" value="w" checked> White</label>
+          <label><input type="radio" name="side" value="b"> Black</label>
+          <label><input type="radio" name="side" value="random"> Random</label>
+        </fieldset>
+        <label class="level">Stockfish level <output id="level-name"></output>
+          <input type="range" id="level" name="level" min="1" max="10" step="1" value="3">
+        </label>
+      </div>
+      <p id="nd-hex" class="fr-help" hidden>Stockfish doesn’t play hexagonal chess, so this is a game for two people taking turns on this device. To play someone elsewhere, use Play a friend.</p>
       <div class="row">
         <button type="submit" value="cancel">Cancel</button>
         <button type="submit" value="start" class="primary">Start</button>
@@ -154,6 +162,11 @@
     <form method="dialog">
       <h2>Play a friend</h2>
       <p class="fr-help">You get a link to send them. They don’t need an account.</p>
+      <fieldset class="sides variants">
+        <legend>Game</legend>
+        <label><input type="radio" name="fr-variant" value="chess" checked> Chess</label>
+        <label><input type="radio" name="fr-variant" value="hex"> Hexagonal chess</label>
+      </fieldset>
       <fieldset class="sides">
         <legend>You play</legend>
         <label><input type="radio" name="fr-side" value="w" checked> White</label>

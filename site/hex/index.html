@@ -19,7 +19,7 @@
 
   <main class="layout">
     <section class="play">
-      <div class="player" id="top-player"><span class="name"></span></div>
+      <div class="player" id="top-player"><span class="name"></span><span class="clock" hidden></span></div>
       <div class="board-box">
         <div id="hexboard"></div>
         <div id="gameover" class="gameover" hidden>
@@ -42,11 +42,27 @@
           </div>
         </dialog>
       </div>
-      <div class="player" id="bottom-player"><span class="name"></span></div>
+      <div class="player" id="bottom-player"><span class="name"></span><span class="clock" hidden></span></div>
     </section>
 
     <aside class="panel">
       <p id="status" class="status" role="status" aria-live="polite"></p>
+
+      <!-- A game against a person: the link to send, and what you can do during it -->
+      <section id="online-box" class="online-box" hidden aria-label="Game against a person">
+        <div id="ob-link-row" class="ob-link" hidden>
+          <input id="ob-link" readonly aria-label="The link to send your friend">
+          <button type="button" id="ob-copy">Copy link</button>
+        </div>
+        <div class="ob-actions">
+          <button type="button" id="ob-draw">Offer draw</button>
+          <button type="button" id="ob-accept" class="primary" hidden>Accept draw</button>
+          <button type="button" id="ob-decline" hidden>Decline</button>
+          <button type="button" id="ob-abort">Call off</button>
+          <button type="button" id="ob-resign">Resign</button>
+          <button type="button" id="ob-leave">Back to your game here</button>
+        </div>
+      </section>
 
       <div class="nav" role="group" aria-label="Look through the game">
         <button type="button" id="first" aria-label="First move" title="First move (Home)"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h2v14H6zM20 5v14L9 12z"/></svg></button>
@@ -61,8 +77,10 @@
         <button type="button" id="new-game" class="primary">New game</button>
         <button type="button" id="undo">Take back</button>
         <button type="button" id="flip">Flip board</button>
+        <button type="button" id="play-friend">Play a friend</button>
+        <button type="button" id="live-games">Live games</button>
       </div>
-      <label class="fr-same"><input type="checkbox" id="auto-turn"> Turn the board to whoever’s move it is</label>
+      <label class="fr-same" id="auto-turn-row"><input type="checkbox" id="auto-turn"> Turn the board to whoever’s move it is</label>
 
       <p class="hint">Two players on one device. Tap a piece, then where it goes, or drag it.</p>
       <details class="hex-rules">
@@ -76,6 +94,55 @@
       </details>
     </aside>
   </main>
+
+<!-- These two boxes are copies of the chess page's (a test checks they match) -->
+  <dialog id="friend-dialog" class="box">
+    <form method="dialog">
+      <h2>Play a friend</h2>
+      <p class="fr-help">You get a link to send them. They don’t need an account.</p>
+      <fieldset class="sides variants">
+        <legend>Game</legend>
+        <label><input type="radio" name="fr-variant" value="chess" checked> Chess</label>
+        <label><input type="radio" name="fr-variant" value="hex"> Hexagonal chess</label>
+      </fieldset>
+      <fieldset class="sides">
+        <legend>You play</legend>
+        <label><input type="radio" name="fr-side" value="w" checked> White</label>
+        <label><input type="radio" name="fr-side" value="b"> Black</label>
+        <label><input type="radio" name="fr-side" value="random"> Random</label>
+      </fieldset>
+      <div class="fr-presets" role="group" aria-label="Common time controls">
+        <button type="button" data-preset="1+0">1+0</button><button type="button" data-preset="3+2">3+2</button>
+        <button type="button" data-preset="5+3">5+3</button><button type="button" data-preset="10+5">10+5</button>
+        <button type="button" data-preset="15+10">15+10</button><button type="button" data-preset="30+0">30+0</button>
+      </div>
+      <div class="fr-times">
+        <div class="fr-row"><span id="fr-w-label">Both sides</span>
+          <label><input id="fr-w-min" type="number" min="0.5" max="180" step="0.5" value="10"> min</label>
+          <label>+ <input id="fr-w-inc" type="number" min="0" max="180" step="1" value="5"> s a move</label></div>
+        <div class="fr-row" id="fr-black-row" hidden><span>Black</span>
+          <label><input id="fr-b-min" type="number" min="0.5" max="180" step="0.5" value="10"> min</label>
+          <label>+ <input id="fr-b-inc" type="number" min="0" max="180" step="1" value="5"> s a move</label></div>
+        <label class="fr-same"><input type="checkbox" id="fr-same" checked> The same time for both</label>
+      </div>
+      <label class="fr-same fr-listed"><input type="checkbox" id="fr-listed"> List it in Live games, so anyone can join</label>
+      <p id="fr-error" class="acc-error" role="alert"></p>
+      <div class="row">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" value="create" class="primary">Make the link</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="lobby" class="box lobby" aria-labelledby="lobby-title">
+    <div class="lobby-head"><h2 id="lobby-title">Live games</h2><button type="button" id="lobby-close">Close</button></div>
+    <h3>Waiting for an opponent</h3>
+    <ul id="lobby-open" class="lobby-list"></ul>
+    <p id="lobby-open-none" class="lobby-none">No open games right now. Make one with Play a friend, and tick “List it in Live games”.</p>
+    <h3>Being played</h3>
+    <ul id="lobby-live" class="lobby-list"></ul>
+    <p id="lobby-live-none" class="lobby-none">Nobody’s playing a listed game right now.</p>
+  </dialog>
 
   <dialog id="confirm" class="box">
     <form method="dialog">
