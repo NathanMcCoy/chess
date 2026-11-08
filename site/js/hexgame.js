@@ -78,6 +78,8 @@ function describe(r, you = null) {
   const outcome = mine === null ? (r.winner ? 'win' : 'draw') : mine > 0.5 ? 'win' : mine < 0.5 ? 'loss' : 'draw';
   return { score, title, text, outcome };
 }
+// "White wins. Checkmate." but "You win! Checkmate.": a full stop only where the title has none
+const sentence = o => `${/[.!?]$/.test(o.title) ? o.title : `${o.title}.`} ${o.text}`;
 // How the game shown ended, or null while it's going on
 function outcome() {
   if (!online) return played.result ? describe(played.result) : null;
@@ -118,7 +120,7 @@ function render() {
   status.textContent = notice ?? (at < n
     ? (at === 0 ? 'Looking at the start. → to go on.' : `Looking at move ${Math.ceil(at / 2)}${at % 2 ? '' : '…'} ${played.names[at - 1]}.`)
     : online ? onlineStatus(over, turn, inCheck)
-      : over ? `${over.title}. ${over.text}` : `${NAME[turn]} to move${inCheck ? ': in check!' : '.'}`);
+      : over ? sentence(over) : `${NAME[turn]} to move${inCheck ? ': in check!' : '.'}`);
   for (const [id, side] of [['top-player', other(orientation)], ['bottom-player', orientation]]) {
     const row = $(id);
     row.querySelector('.name').textContent = sideName(side);
@@ -167,7 +169,6 @@ function render() {
     $('go-title').textContent = over.title;
     $('go-reason').textContent = over.text;
   }
-  $('go-new').hidden = !!online;
   renderOnline();
   renderClocks();
   save();
@@ -282,7 +283,7 @@ function backHere(changeAddress = true, message = null) {
 function onlineStatus(over, turn, inCheck) {
   const v = online.view, you = online.you;
   if (online.problem) return online.problem;
-  if (over) return `${over.title}. ${over.text}`;
+  if (over) return sentence(over);
   if (v.status === 'waiting') {
     if (!you) return 'Waiting for a second player.';
     return v.listed ? 'Waiting for an opponent: your game is in Live games. You can also send the link below.' : 'Waiting for your friend: send them the link below.';
@@ -357,11 +358,16 @@ function confirmBox(text, yes) {
 }
 
 async function newGame() {
-  if (game.moves.length && !played.result && !(await confirmBox('Start a new game? This one will be lost.', 'New game'))) return;
+  // From a finished game against a person (its result card): back to this device's own game first,
+  // shown behind the question if it's one that would be lost
+  if (online) backHere();
+  const unfinished = game.moves.length && !hex.replay(game.start, game.moves).result;
+  if (unfinished && !(await confirmBox('Start a new game? This one will be lost.', 'New game'))) return;
   game = { start: hex.start(), moves: [] };
   viewing = null;
   cardClosed = false;
-  notice = null;
+  // Said every time: on a board that was already empty, nothing else would show it worked
+  notice = 'New game started. White to move.';
   if (autoTurn) orientation = 'w';
   render();
 }
