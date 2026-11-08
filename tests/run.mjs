@@ -553,7 +553,13 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     await viewer.waitForFunction(() => document.querySelectorAll('#moves button').length === 1);
     check(who, (await status(viewer)) === 'Black to move.' && await viewer.locator('#ob-draw').isHidden(), 'Watch shows it live, with nothing to play', await status(viewer));
     await move(seeker, 'e7', 'e5', touch);
-    await viewer.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
+    // Failed once (iPhone, Nov 7, cause not found yet): say whether the move was played at all, or
+    // played but never reached the watcher
+    await viewer.waitForFunction(() => document.querySelectorAll('#moves button').length === 2, null, { timeout: 15000 }).catch(async () => {
+      const seen = async p => `${await moveCount(p)} moves, status "${await status(p)}"`;
+      const server = await viewer.evaluate(async id => (await (await fetch(`/api/games/${id}`)).json()).moves?.length, id).catch(e => e.message);
+      throw new Error(`the watcher never saw Black’s reply. Seeker: ${await seen(seeker)}; watcher: ${await seen(viewer)}; the server has ${server} moves`);
+    });
     check(who, true, 'the watcher sees the next move arrive');
     for (const p of [maker, seeker, viewer]) await p.close();
   }
@@ -719,7 +725,11 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
 
   // New game, from the card: no question, as the game is over
   await page.locator('#go-new').click();
-  check(who, (await page.locator('.hex-pieces piece').count()) === 36 && (await hexMoves(page)).length === 0, 'New game sets the pieces up again');
+  check(who, (await page.locator('.hex-pieces piece').count()) === 36 && (await hexMoves(page)).length === 0 && (await status(page)) === 'New game started. White to move.',
+    'New game sets the pieces up again, and says so', await status(page));
+  await hexMove(page, 'f5', 'f6', touch);
+  check(who, (await status(page)) === 'Black to move.', 'the first move clears that message', await status(page));
+  await page.locator('#undo').click();
   // During a game it asks first, in the page's own box
   await hexMove(page, 'f5', 'f6', touch);
   await page.locator('#new-game').click();
@@ -739,7 +749,7 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await nd.getByRole('button', { name: 'Start' }).click();
   await np.waitForURL(/\/hex$/);
   await np.locator('.hex-pieces piece').first().waitFor();
-  check(who, (await np.locator('.hex-pieces piece').count()) === 36 && (await status(np)) === 'White to move.', 'and Start opens a new hex game');
+  check(who, (await np.locator('.hex-pieces piece').count()) === 36 && (await status(np)) === 'New game started. White to move.', 'and Start opens a new hex game', await status(np));
   await np.close();
 
   // Against a person: made from the chess page's Play a friend, joined by its link, watched from Live
@@ -819,6 +829,13 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   check(who, (await card(host)) === 'You win! | Your opponent resigned. | 1–0', 'the winner is told', await card(host));
   check(who, (await card(guest)) === 'Your opponent wins | You resigned. | 1–0', 'so is the one who resigned', await card(guest));
   check(who, (await card(viewer)) === 'White wins | Black resigned. | 1–0', 'and the watcher', await card(viewer));
+  check(who, (await status(host)) === 'You win! Your opponent resigned.', 'the status line says it without a stray full stop', await status(host));
+
+  // New game on the result card leaves the game for a new one on this device (it was missing online)
+  await guest.locator('#go-new').click();
+  await guest.locator('#online-box').waitFor({ state: 'hidden' });
+  check(who, new URL(guest.url()).pathname === '/hex' && !new URL(guest.url()).search && (await hexMoves(guest)).length === 0 && (await status(guest)) === 'New game started. White to move.',
+    'New game on the result card leaves the game, for a new one here', `${guest.url()} ${await status(guest)}`);
 
   // Back to your own game here
   await host.locator('#go-close').click();
@@ -826,6 +843,10 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await host.locator('#online-box').waitFor({ state: 'hidden' });
   check(who, new URL(host.url()).pathname === '/hex' && !new URL(host.url()).search && (await hexMoves(host)).length === 0 && await host.locator('#bottom-player .clock').isHidden(),
     'leaving goes back to your own game on this device', host.url());
+  // Then New game, on that empty board: it must still show it did something (it changed nothing
+  // on screen, so it seemed not to work: found by the user on Nov 7)
+  await host.locator('#new-game').click();
+  check(who, (await status(host)) === 'New game started. White to move.', 'New game on an empty board still says it started one', await status(host));
   for (const p of [host, guest, viewer]) await p.close();
 }
 
