@@ -344,7 +344,14 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     await move(acc, 'e2', 'e4', touch);
     await waitMoves(acc, 2, 'Stockfish answering a guest');
     const guestMoves = await acc.locator('#moves button').allInnerTexts();
-    await acc.locator('#acc-open').click();
+    // Opened and measured in one go, with no screen refresh between: the box's board must have its
+    // size at once. It used to be 0×0 until the next refresh, and a tap measured in that moment hit
+    // its corner and was lost (the rare "Play at least one move." on Android, found Nov 7)
+    const sizeAtOpen = await acc.evaluate(() => {
+      document.getElementById('acc-open').click();
+      return document.querySelector('#acc-board cg-board').getBoundingClientRect().width;
+    });
+    check(who, sizeAtOpen > 200, 'the account box’s board is full size the moment it opens', `${Math.round(sizeAtOpen)}px wide`);
     await acc.locator('#account[open]').waitFor();
     await acc.locator('#account [data-tab=signup]').click();
     await acc.locator('#acc-name').fill(who);
