@@ -156,8 +156,12 @@ fn bench(rules: &hex::Rules, args: &[String]) {
         p = rules.play(&p, &c.mv.unwrap());
         if i == 19 { mid = Some(p.clone()); }
     }
+    // Judging with: --weights W.json (default: the untrained weights), or --net N.json
+    let weights = arg(args, "weights").map(|f| train::load(f).1).unwrap_or_else(train::starting);
+    let net = arg(args, "net").map(train::load_net);
     for (name, pos) in [("start", rules.start()), ("move 20", mid.unwrap())] {
-        let mut s = search::Searcher::new(rules, train::starting());
+        let mut s = search::Searcher::new(rules, weights.clone());
+        s.set_net(net.clone());
         s.seen.insert(pos.hash);
         let t = std::time::Instant::now();
         let c = s.choose(&pos, nodes);
