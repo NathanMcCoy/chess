@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Hexagonal chess · pacificfish</title>
-  <meta name="description" content="Gliński's hexagonal chess for two players on one device.">
+  <meta name="description" content="Gliński's hexagonal chess: two players on one device, against a friend, or against the site's own bot.">
   <meta name="theme-color" content="#0d2a3a">
   <!-- Paths from the site's root: this page answers at both /hex and /hex/ -->
   <!-- The icon (made by tools/build-icons.mjs from favicon.svg) -->
@@ -81,12 +81,14 @@
         <button type="button" id="new-game" class="primary">New game</button>
         <button type="button" id="undo">Take back</button>
         <button type="button" id="flip">Flip board</button>
+        <button type="button" id="play-bot">Play the bot</button>
         <button type="button" id="play-friend">Play a friend</button>
         <button type="button" id="live-games">Live games</button>
       </div>
       <label class="fr-same" id="auto-turn-row"><input type="checkbox" id="auto-turn"> Turn the board to whoever’s move it is</label>
+      <p id="bot-row" class="bot-row" hidden><span id="bot-about"></span> <button type="button" id="bot-off">Two players instead</button></p>
 
-      <p class="hint">Two players on one device. Tap a piece, then where it goes, or drag it.</p>
+      <p class="hint">Two players on one device, or you against the bot. Tap a piece, then where it goes, or drag it.</p>
       <details class="hex-rules">
         <summary>How Gliński’s hexagonal chess differs</summary>
         <ul>
@@ -98,6 +100,29 @@
       </details>
     </aside>
   </main>
+
+  <dialog id="bot-dialog" class="box">
+    <form method="dialog">
+      <h2>Play the bot</h2>
+      <p class="fr-help">The site’s own bot, which learns by playing itself. It’s still a beginner.</p>
+      <fieldset class="sides">
+        <legend>You play</legend>
+        <label><input type="radio" name="bot-side" value="w" checked> White</label>
+        <label><input type="radio" name="bot-side" value="b"> Black</label>
+        <label><input type="radio" name="bot-side" value="random"> Random</label>
+      </fieldset>
+      <fieldset class="sides">
+        <legend>How long it thinks</legend>
+        <label><input type="radio" name="bot-level" value="1"> Quick</label>
+        <label><input type="radio" name="bot-level" value="2" checked> Normal</label>
+        <label><input type="radio" name="bot-level" value="3"> Long</label>
+      </fieldset>
+      <div class="row">
+        <button type="submit" value="cancel">Cancel</button>
+        <button type="submit" value="start" class="primary">Start</button>
+      </div>
+    </form>
+  </dialog>
 
 <!-- These two boxes are copies of the chess page's (a test checks they match) -->
   <dialog id="friend-dialog" class="box">

@@ -805,6 +805,46 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   check(who, (await np.locator('.hex-pieces piece').count()) === 36 && (await status(np)) === 'New game started. White to move.', 'and Start opens a new hex game', await status(np));
   await np.close();
 
+  // Against the site's bot. On the live site too: it thinks in the browser, and nothing is stored.
+  {
+    const bp = await freshPage();
+    await bp.goto('/hex');
+    await bp.locator('.hex-pieces piece').first().waitFor();
+    await bp.locator('#play-bot').click();
+    const bd = bp.locator('#bot-dialog[open]');
+    await bd.waitFor();
+    await bd.locator('input[name=bot-side][value=b]').check();
+    await bd.locator('input[name=bot-level][value="1"]').check();
+    await bd.getByRole('button', { name: 'Start' }).click();
+    const plies = n => bp.waitForFunction(n => document.querySelectorAll('#moves button').length === n, n, { timeout: 15000 });
+    await plies(1);
+    const [c5, c7] = [await hexCell(bp, 'f5'), await hexCell(bp, 'f7')];
+    const names = async () => `${await bp.locator('#bottom-player .name').innerText()} / ${await bp.locator('#top-player .name').innerText()}`;
+    check(who, (await status(bp)) === 'Your move.' && (await names()) === 'You / The bot (Quick)' && c7.y > c5.y,
+      'playing the bot as Black: it moves first, with you at the bottom', `${await status(bp)} | ${await names()}`);
+    // A move of yours (the first legal one, whatever the bot played), and its reply
+    const saved = await bp.evaluate(k => JSON.parse(localStorage.getItem(k)), HEX_SAVE);
+    const [, from, to] = hex.legal(hex.replay(saved.start, saved.moves).states.at(-1))[0].match(/^([a-l]\d{1,2})([a-l]\d{1,2})/);
+    await hexMove(bp, from, to, touch);
+    await plies(3);
+    check(who, (await status(bp)) === 'Your move.', 'your move, then the bot answers', await status(bp));
+    await bp.locator('#undo').click();
+    check(who, (await hexMoves(bp)).length === 1 && (await status(bp)) === 'Your move.', 'Take back takes back your move and its reply', JSON.stringify(await hexMoves(bp)));
+    await bp.reload();
+    await bp.locator('.hex-pieces piece').first().waitFor();
+    check(who, (await hexMoves(bp)).length === 1 && (await names()) === 'You / The bot (Quick)', 'a reload keeps the game against the bot', await names());
+    // With a mate in one, it plays it
+    await hexSeed(bp, hexPosition({ a6: 'k', a1: 'K', b4: 'Q' }), { vsBot: { side: 'b', level: 1 }, orientation: 'b' });
+    await bp.locator('#gameover:not([hidden])').waitFor({ timeout: 15000 });
+    check(who, (await bp.locator('#go-title').innerText()) === 'The bot wins' && (await bp.locator('#go-reason').innerText()) === 'Checkmate.',
+      'the bot plays mate in one', `${await bp.locator('#go-title').innerText()} ${await bp.locator('#go-reason').innerText()}`);
+    // Back to two players
+    await bp.locator('#go-close').click();
+    await bp.locator('#bot-off').click();
+    check(who, (await names()) === 'Black / White' && await bp.locator('#bot-row').isHidden(), 'Two players instead goes back to two players', await names());
+    await bp.close();
+  }
+
   // Against a person: made from the chess page's Play a friend, joined by its link, watched from Live
   // games, resigned. Not on the live site, where it would leave real games behind.
   if (remote) return check(who, true, 'hex against a person skipped on the live site');

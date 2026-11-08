@@ -1,6 +1,7 @@
 // The hexagonal chess page (/hex): Gliński's rules (variants/hex.js) on the hex board
-// (boards/hexboard.js). Two players on one device (kept in this browser), or a game against a person
-// elsewhere (online.js talks to the server, as on the chess page): /hex?g=<id> opens one.
+// (boards/hexboard.js). Two players on one device, or you against the site's own bot (bot/worker.js),
+// both kept in this browser; or a game against a person elsewhere (online.js talks to the server, as
+// on the chess page): /hex?g=<id> opens one.
 import hex from './variants/hex.js';
 import { hexBoard } from './boards/hexboard.js';
 import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath } from './online.js';
@@ -22,11 +23,15 @@ let cardClosed = false;     // the result card was put away to look at the board
 let online = null;
 let clockTimer = null;
 let notice = null;          // a one-off message for the status line
+// You against the site's bot: { side: the side you play, level }, or null for two players
+let vsBot = null;
+const LEVELS = { 1: { name: 'Quick', ms: 250 }, 2: { name: 'Normal', ms: 1000 }, 3: { name: 'Long', ms: 3000 } };
 
-// --- Kept in this browser (the two-player game only) -------------------------------------------
+// --- Kept in this browser (the game on this device, two players or against the bot) -----------
 function load() {
   game = { start: hex.start(), moves: [] };
   orientation = 'w';
+  vsBot = null;
   try {
     const s = JSON.parse(localStorage.getItem(SAVE) || 'null');
     if (!s || s.variant !== 'hex' || typeof s.start !== 'string' || !Array.isArray(s.moves)) return;
@@ -35,18 +40,20 @@ function load() {
     orientation = s.orientation === 'b' ? 'b' : 'w';
     autoTurn = s.autoTurn === true;
     cardClosed = s.cardClosed === true;
+    if (s.vsBot && ['w', 'b'].includes(s.vsBot.side) && LEVELS[s.vsBot.level]) vsBot = { side: s.vsBot.side, level: s.vsBot.level };
   } catch { /* storage blocked or the save isn't JSON: a new game */ }
 }
 function save() {
   if (online) return;
-  try { localStorage.setItem(SAVE, JSON.stringify({ variant: 'hex', start: game.start, moves: game.moves, orientation, autoTurn, cardClosed })); } catch { /* storage blocked */ }
+  try { localStorage.setItem(SAVE, JSON.stringify({ variant: 'hex', start: game.start, moves: game.moves, orientation, autoTurn, cardClosed, vsBot })); } catch { /* storage blocked */ }
 }
 
 // --- Who's who, and how it ended ----------------------------------------------------------------
 // "your friend" in a game by link, "your opponent" in one from Live games (who may be a stranger)
-const them = () => (online?.view.listed ? 'your opponent' : 'your friend');
+const them = () => (!online && vsBot ? 'the bot' : online?.view.listed ? 'your opponent' : 'your friend');
 const Them = () => them()[0].toUpperCase() + them().slice(1);
 function sideName(c) {
+  if (!online && vsBot) return c === vsBot.side ? 'You' : `The bot (${LEVELS[vsBot.level].name})`;
   if (!online) return NAME[c];
   if (c === online.you) return 'You';
   const p = online.view.players[c];
@@ -82,7 +89,7 @@ function describe(r, you = null) {
 const sentence = o => `${/[.!?]$/.test(o.title) ? o.title : `${o.title}.`} ${o.text}`;
 // How the game shown ended, or null while it's going on
 function outcome() {
-  if (!online) return played.result ? describe(played.result) : null;
+  if (!online) return played.result ? describe(played.result, vsBot ? vsBot.side : null) : null;
   const v = online.view;
   if (v.status === 'aborted') return { score: '*', title: 'Called off', text: 'The game was called off.', outcome: 'draw' };
   return v.status === 'over' && v.result ? describe(v.result, online.you) : null;
@@ -101,8 +108,8 @@ function render() {
   const pieces = hex.pieces(state);
   const over = outcome();
   const live = at === n && !over;
-  // Who may move now: either side on one device; online, only you, on your turn
-  const canMove = live && (!online || (online.view.status === 'playing' && online.you === turn));
+  // Who may move now: either side on one device; against the bot or online, only you, on your turn
+  const canMove = live && (online ? online.view.status === 'playing' && online.you === turn : !vsBot || turn === vsBot.side);
 
   const dests = {};
   if (canMove) for (const m of hex.legal(state)) {
@@ -120,7 +127,9 @@ function render() {
   status.textContent = notice ?? (at < n
     ? (at === 0 ? 'Looking at the start. → to go on.' : `Looking at move ${Math.ceil(at / 2)}${at % 2 ? '' : '…'} ${played.names[at - 1]}.`)
     : online ? onlineStatus(over, turn, inCheck)
-      : over ? sentence(over) : `${NAME[turn]} to move${inCheck ? ': in check!' : '.'}`);
+      : over ? sentence(over)
+        : vsBot ? (turn === vsBot.side ? (inCheck ? 'Check! Your move.' : 'Your move.') : 'The bot is thinking…')
+          : `${NAME[turn]} to move${inCheck ? ': in check!' : '.'}`);
   for (const [id, side] of [['top-player', other(orientation)], ['bottom-player', orientation]]) {
     const row = $(id);
     row.querySelector('.name').textContent = sideName(side);
@@ -164,8 +173,11 @@ function render() {
 
   $('first').disabled = $('prev').disabled = at === 0;
   $('next').disabled = $('last').disabled = at === n;
-  $('undo').disabled = n === 0;
+  // Against the bot, Take back needs a move of yours to take back
+  $('undo').disabled = !online && vsBot ? !game.moves.some((_, i) => plySide(i) === vsBot.side) : n === 0;
   $('auto-turn').checked = autoTurn;
+  $('bot-row').hidden = !vsBot || !!online;
+  if (vsBot) $('bot-about').textContent = `Playing the bot (${LEVELS[vsBot.level].name}) as ${NAME[vsBot.side]}.`;
 
   // The result card, over the board, until it's put away
   const box = $('gameover');
@@ -179,7 +191,11 @@ function render() {
   renderOnline();
   renderClocks();
   save();
+  askBot();
 }
+
+// Which side played move i of this game (0 is the first)
+const plySide = i => (i % 2 === 0 ? hex.turn(game.start) : other(hex.turn(game.start)));
 
 const show = at => { viewing = Math.max(0, Math.min(at, game.moves.length)); if (viewing === game.moves.length) viewing = null; render(); };
 
@@ -198,13 +214,56 @@ async function play(from, to) {
   cardClosed = false;
   notice = null;
   if (online) { online.problem = null; render(); return sendMove(move); }
-  if (autoTurn) orientation = hex.turn(hex.replay(game.start, game.moves).states.at(-1));
+  if (autoTurn && !vsBot) orientation = hex.turn(hex.replay(game.start, game.moves).states.at(-1));
   render();
+}
+
+// --- The site's bot ------------------------------------------------------------------------------
+// It thinks in a Web Worker. Each question has a number; an answer to anything but the latest is
+// dropped, and taking back or starting again stops the worker, so an old answer can't land in a
+// different game.
+let botWorker = null;
+let botAsked = 0;       // the latest question's number
+let botFor = null;      // the game it's thinking about, so it isn't asked twice
+function askBot() {
+  if (!vsBot || online || played.result) return;
+  if (hex.turn(played.states.at(-1)) === vsBot.side) return;
+  const key = `${game.start} ${game.moves.join(' ')}`;
+  if (botFor === key) return;
+  botFor = key;
+  const id = ++botAsked;
+  botWorker ??= startBot();
+  botWorker.postMessage({ id, variant: 'hex', start: game.start, moves: game.moves, timeMs: LEVELS[vsBot.level].ms });
+}
+function startBot() {
+  const w = new Worker('/js/bot/worker.js', { type: 'module' });
+  w.onmessage = ({ data }) => {
+    if (data.id !== botAsked || !vsBot || online) return;
+    botFor = null;
+    const legal = hex.legal(played.states.at(-1));
+    if (data.error || !legal.includes(data.move)) {
+      notice = `The bot couldn’t move (${data.error || 'it chose an impossible move'}). Take back or start a new game to try again.`;
+      return render();
+    }
+    game = { ...game, moves: [...game.moves, data.move] };
+    cardClosed = false;
+    notice = null;
+    render();
+  };
+  w.onerror = () => { botFor = null; notice = 'The bot couldn’t start. Reload the page to try again.'; render(); };
+  return w;
+}
+// Forget any question in progress (the game it was about is changing)
+function stopBot() {
+  botAsked++;
+  if (botFor && botWorker) { botWorker.terminate(); botWorker = null; }
+  botFor = null;
 }
 
 // --- Games against people -----------------------------------------------------------------------
 // join: you chose to play it (from Live games), so there's no invitation to accept first
 async function openOnline(id, { join = false } = {}) {
+  stopBot();   // a bot game here waits until you come back to it
   leaveOnline();
   let v;
   try {
@@ -304,7 +363,7 @@ function onlineStatus(over, turn, inCheck) {
 function renderOnline() {
   const box = $('online-box');
   box.hidden = !online;
-  $('auto-turn-row').hidden = !!online;
+  $('auto-turn-row').hidden = !!online || !!vsBot;   // against the bot, your side stays at the bottom
   if (!online) return;
   const v = online.view, you = online.you, playing = v.status === 'playing';
   $('ob-link-row').hidden = !(you && v.status === 'waiting');
@@ -370,13 +429,44 @@ async function newGame() {
   if (online) backHere();
   const unfinished = game.moves.length && !hex.replay(game.start, game.moves).result;
   if (unfinished && !(await confirmBox('Start a new game? This one will be lost.', 'New game'))) return;
+  stopBot();
   game = { start: hex.start(), moves: [] };
   viewing = null;
   cardClosed = false;
-  // Said every time: on a board that was already empty, nothing else would show it worked
-  notice = 'New game started. White to move.';
-  if (autoTurn) orientation = 'w';
+  // Said every time: on a board that was already empty, nothing else would show it worked. Against
+  // the bot playing White, its first move shows it instead.
+  notice = !vsBot ? 'New game started. White to move.' : vsBot.side === 'w' ? 'New game against the bot. Your move.' : null;
+  if (vsBot) orientation = vsBot.side;
+  else if (autoTurn) orientation = 'w';
   render();
+}
+
+// Play the bot: your side and how long it thinks, then a new game against it
+function playBot() {
+  const box = $('bot-dialog');
+  const form = box.querySelector('form');
+  if (vsBot) {
+    form.querySelector(`input[name=bot-side][value="${vsBot.side}"]`).checked = true;
+    form.querySelector(`input[name=bot-level][value="${vsBot.level}"]`).checked = true;
+  }
+  box.returnValue = '';
+  box.addEventListener('close', async () => {
+    if (box.returnValue !== 'start') return;
+    let side = form.querySelector('input[name=bot-side]:checked').value;
+    if (side === 'random') side = Math.random() < 0.5 ? 'w' : 'b';
+    const level = Number(form.querySelector('input[name=bot-level]:checked').value);
+    const unfinished = game.moves.length && !hex.replay(game.start, game.moves).result;
+    if (unfinished && !(await confirmBox('Start a game against the bot? The game on the board will be lost.', 'Play the bot'))) return;
+    vsBot = { side, level };
+    stopBot();
+    game = { start: hex.start(), moves: [] };
+    viewing = null;
+    cardClosed = false;
+    orientation = side;
+    notice = side === 'w' ? 'You play White against the bot. Your move.' : null;
+    render();
+  }, { once: true });
+  box.showModal();
 }
 
 // --- Buttons and keys ---------------------------------------------------------------------------
@@ -385,10 +475,22 @@ $('go-new').onclick = newGame;
 $('go-close').onclick = () => { cardClosed = true; render(); };
 $('undo').onclick = () => {
   if (online) return;
-  game = { ...game, moves: game.moves.slice(0, -1) };
+  stopBot();
+  let moves = game.moves.slice(0, -1);
+  // Against the bot: back to your own last move (yours and its reply, or just yours while it thinks)
+  if (vsBot) while (moves.length && plySide(moves.length) !== vsBot.side) moves = moves.slice(0, -1);
+  game = { ...game, moves };
   viewing = null;
   cardClosed = false;
-  if (autoTurn) orientation = hex.turn(hex.replay(game.start, game.moves).states.at(-1));
+  notice = null;
+  if (autoTurn && !vsBot) orientation = hex.turn(hex.replay(game.start, game.moves).states.at(-1));
+  render();
+};
+$('play-bot').onclick = playBot;
+$('bot-off').onclick = () => {
+  stopBot();
+  vsBot = null;
+  notice = 'Two players on this device now: carry on from here.';
   render();
 };
 $('flip').onclick = () => { orientation = other(orientation); render(); };
