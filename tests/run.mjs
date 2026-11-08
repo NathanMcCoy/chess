@@ -668,6 +668,27 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await hexTap(page, 'f6', touch);
   await hexMove(page, 'e7', 'e6', touch);
   check(who, JSON.stringify(await hexMoves(page)) === '["f6","e6"]', 'moves are played and named', JSON.stringify(await hexMoves(page)));
+  check(who, (await page.evaluate(() => scrollY)) === 0, 'playing a move doesn’t scroll the page', `${await page.evaluate(() => scrollY)}px`);
+  // In a long game the list scrolls itself to the latest move, and the page still doesn't move
+  {
+    const moves = [];
+    for (let i = 0; i < 40; i++) {
+      const r = hex.replay(hex.start(), moves);
+      if (r.result) break;
+      moves.push(hex.legal(r.states.at(-1))[0]);
+    }
+    const lp = await freshPage();
+    await lp.goto('/hex');
+    await lp.evaluate(m => localStorage.setItem('chess.hex.v1', JSON.stringify({ variant: 'hex', start: m.start, moves: m.moves })), { start: hex.start(), moves });
+    await lp.reload();
+    await lp.locator('#moves button.current').waitFor();
+    const seen = await lp.evaluate(() => {
+      const c = document.querySelector('#moves button.current').getBoundingClientRect(), l = document.querySelector('#moves').getBoundingClientRect();
+      return { inList: c.top >= l.top - 1 && c.bottom <= l.bottom + 1, scrollY };
+    });
+    check(who, moves.length > 20 && seen.inList && seen.scrollY === 0, 'in a long game the list shows the latest move, without scrolling the page', `${moves.length} moves, ${JSON.stringify(seen)}`);
+    await lp.close();
+  }
   check(who, (await page.locator('[data-mark="last e6"]').count()) === 1, 'the last move is lit');
   await hexMove(page, 'f6', 'f7', touch);
   check(who, (await hexMoves(page)).length === 2, 'a pawn can’t move into a piece');

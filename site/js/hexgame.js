@@ -153,7 +153,14 @@ function render() {
     li.textContent = over.score;
     list.append(li);
   }
-  list.querySelector('.current')?.scrollIntoView({ block: 'nearest' });
+  // Keep the current move visible by scrolling the list itself, as the chess page does.
+  // (scrollIntoView scrolled the whole page on a phone after every move: the user's iPhone, Nov 7.)
+  const current = list.querySelector('.current');
+  if (current) {
+    const r = current.getBoundingClientRect(), box = list.getBoundingClientRect();
+    if (r.top < box.top) list.scrollTop -= box.top - r.top;
+    else if (r.bottom > box.bottom) list.scrollTop += r.bottom - box.bottom;
+  }
 
   $('first').disabled = $('prev').disabled = at === 0;
   $('next').disabled = $('last').disabled = at === n;
