@@ -3,7 +3,7 @@
 // these files in this order, with carriage returns left out (Windows and Linux checkouts differ).
 fn main() {
     let mut h: u64 = 0xcbf29ce484222325;
-    for f in ["src/lib.rs", "src/hex.rs", "src/search.rs", "src/wasm.rs"] {
+    for f in ["src/lib.rs", "src/hex.rs", "src/search.rs", "src/wasm.rs", "src/nn.rs"] {
         println!("cargo:rerun-if-changed={f}");
         let bytes = std::fs::read(f).unwrap_or_else(|e| panic!("can't read {f}: {e}"));
         for &b in bytes.iter().filter(|&&b| b != b'\r') {

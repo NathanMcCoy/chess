@@ -18,6 +18,34 @@ export async function loadEngine(bytes, now = () => performance.now()) {
       x.free(p, all.byteLength);
       if (!ok) throw new Error('the engine wants weights of another size');
     },
+    // A neural network (the bytes of a hex-net.bin, from tools/build-net.mjs) to judge positions by
+    // instead of the weights; null: back to the weights
+    setNet(bytes) {
+      if (!bytes) { x.set_net(0, 0, 0, 0); return; }
+      const view = new DataView(bytes.buffer ?? bytes, bytes.byteOffset ?? 0, bytes.byteLength);
+      if (view.byteLength < 16 || view.getUint32(0, false) !== 0x48584e4e || view.getUint32(4, true) !== 1) {
+        throw new Error('not a network file');
+      }
+      const acc = view.getUint32(8, true), hidden = view.getUint32(12, true);
+      const n = (view.byteLength - 16) / 4;
+      if (!Number.isInteger(n)) throw new Error('the network file is cut short');
+      const p = x.alloc(n * 4);
+      new Uint8Array(x.memory.buffer, p, n * 4).set(new Uint8Array(view.buffer, view.byteOffset + 16, n * 4));
+      const ok = x.set_net(p, n, acc, hidden);
+      x.free(p, n * 4);
+      if (!ok) throw new Error('the engine wants a network of another size');
+    },
+    // The network's value of a position: 91 cells as the engine numbers pieces, and the side to
+    // move (0 White, 1 Black); in pawns for the side to move (NaN without a network)
+    netValue(board, turn) {
+      const p = x.alloc(92);
+      const b = new Uint8Array(x.memory.buffer, p, 92);
+      b.set(board);
+      b[91] = turn;
+      const v = x.net_value(p);
+      x.free(p, 92);
+      return v;
+    },
     // A move for the game start + moves, in about `ms` milliseconds: { move, score, depth, nodes },
     // or { move: null } when the game is over
     choose(start, moves, ms) {

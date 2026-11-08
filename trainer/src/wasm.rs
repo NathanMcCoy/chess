@@ -6,6 +6,11 @@
 //   choose(where, n, ms) -> the length of the answer (read it at out()): the game as text, "<start
 //     position>\n<moves, space-separated>", answered "<move> <score> <depth> <positions>", "none" if
 //     the game is over, or "error <why>"
+//   set_net(where, n, acc, hidden) -> 1, or 0 if n f32 numbers aren't a network of that size (nn.rs's
+//     order): from then on it judges by the network instead of the weights. set_net(0, 0, 0, 0): back
+//     to the weights
+//   net_value(where) -> the network's value of 92 bytes (91 cells as hex.rs numbers pieces, then
+//     the side to move: 0 White, 1 Black), in pawns for the side to move; NaN without a network
 //   source_hash() -> the length of the source's fingerprint, at out() (see build.rs)
 // The page provides the clock: env.now(), in milliseconds (performance.now).
 use crate::hex::*;
@@ -18,7 +23,7 @@ unsafe extern "C" {
 }
 fn clock() -> f64 { unsafe { now() } }
 
-struct Engine { rules: &'static Rules, searcher: Searcher<'static>, out: Vec<u8> }
+struct Engine { rules: &'static Rules, searcher: Searcher<'static>, net: Option<std::sync::Arc<crate::nn::Net>>, out: Vec<u8> }
 
 thread_local! {
     static ENGINE: RefCell<Option<Engine>> = const { RefCell::new(None) };
@@ -29,7 +34,7 @@ fn with<T>(f: impl FnOnce(&mut Engine) -> T) -> T {
         let mut slot = cell.borrow_mut();
         let e = slot.get_or_insert_with(|| {
             let rules: &'static Rules = Box::leak(Box::new(Rules::new()));
-            Engine { rules, searcher: Searcher::new(rules, Weights::starting()), out: Vec::new() }
+            Engine { rules, searcher: Searcher::new(rules, Weights::starting()), net: None, out: Vec::new() }
         });
         f(e)
     })
@@ -69,6 +74,35 @@ pub unsafe extern "C" fn set_weights(p: *const f64, n: usize) -> i32 {
     };
     with(|e| e.searcher.set_weights(&w));
     1
+}
+
+/// # Safety
+/// `p` must point to `n` f32 numbers (unless n is 0).
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn set_net(p: *const f32, n: usize, acc: usize, hidden: usize) -> i32 {
+    if n == 0 {
+        with(|e| { e.net = None; e.searcher.set_net(None); });
+        return 1;
+    }
+    let x = unsafe { std::slice::from_raw_parts(p, n) };
+    let Some(net) = crate::nn::Net::from_numbers(acc, hidden, x) else { return 0 };
+    let net = std::sync::Arc::new(net);
+    with(|e| { e.net = Some(net.clone()); e.searcher.set_net(Some(net)); });
+    1
+}
+
+/// # Safety
+/// `p` must point to 92 bytes.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn net_value(p: *const u8) -> f32 {
+    let x = unsafe { std::slice::from_raw_parts(p, CELLS + 1) };
+    with(|e| match &e.net {
+        Some(net) => {
+            let board: [u8; CELLS] = x[..CELLS].try_into().unwrap();
+            net.evaluate(e.rules, &e.rules.from_board(board, x[CELLS]))
+        }
+        None => f32::NAN,
+    })
 }
 
 /// # Safety
