@@ -7,6 +7,9 @@
 | `chessground.base.css`, `chessground.cburnett.css` | npm `chessground`, `assets/` (cburnett pieces by Colin M.L. Burnett) | 9.2.1 | GPL-3.0-or-later |
 | `stockfish/stockfish-19-lite-single.js` + `.wasm` | npm `stockfish` (Stockfish.js by Nathan Rugg), `bin/` | 19.0.1 | GPL-3.0 |
 
+The site's icon (`site/favicon.svg`, and the PNG and ICO copies `tools/build-icons.mjs` makes from it)
+uses the cburnett white rook from `chessground.cburnett.css`, under the same license.
+
 Full license texts are in `licenses/`. Stockfish's source: https://github.com/official-stockfish/Stockfish
 and https://github.com/nmrugg/stockfish.js. To update one, download it with `npm pack <name>` (which runs
 nothing), copy the same files over, and change the version here, in a commit of its own.

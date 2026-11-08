@@ -71,6 +71,8 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   check(who, await page.locator('#board cg-board piece').count() === 32, 'the board starts with 32 pieces');
   const zoom = await page.evaluate(() => getComputedStyle(document.documentElement).touchAction);
   check(who, zoom === 'manipulation', 'no double-tap zoom on the page', zoom);
+  const icons = await iconProblems(page);
+  check(who, !icons, 'the site’s icon loads (SVG, ICO and the iPhone one)', icons);
   check(who, (await status(page)) === 'Your move.', 'and says it is your move', await status(page));
   const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(who, over <= 0, 'nothing is wider than the screen', `${over}px over`);
@@ -614,6 +616,22 @@ const hexPosition = (pieces, turn = 'w') => [...hex.geometry.files].map(f => {
   }
   return out + (empty || '');
 }).join('/') + ` ${turn} - 0 1`;
+// Every icon the page links to loads from the server, with an image's type, and draws as a picture.
+// Returns what's wrong, or '' when all is well.
+const iconProblems = page => page.evaluate(async () => {
+  const links = [...document.querySelectorAll('link[rel~="icon"], link[rel="apple-touch-icon"]')];
+  if (links.length !== 3) return `${links.length} icon links, not 3`;
+  const bad = [];
+  for (const l of links) {
+    const res = await fetch(l.href);
+    const type = res.headers.get('content-type') || '';
+    const img = new Image();
+    img.src = l.href;
+    const drawn = await img.decode().then(() => img.naturalWidth > 0, () => false);
+    if (!res.ok || !type.startsWith('image/') || !drawn) bad.push(`${new URL(l.href).pathname}: ${res.status} ${type}${drawn ? '' : ', not drawn'}`);
+  }
+  return bad.join('; ');
+});
 async function hexCell(page, name) {
   await page.evaluate(() => window.scrollTo(0, 0));
   const b = await page.locator(`#hexboard polygon[data-cell="${name}"]`).boundingBox();
@@ -641,6 +659,8 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   // The test browsers can't double-tap to zoom, so this checks the setting that stops it on phones
   const zoom = await page.evaluate(() => [getComputedStyle(document.documentElement).touchAction, getComputedStyle(document.getElementById('hexboard')).touchAction]);
   check(who, zoom[0] === 'manipulation' && zoom[1] === 'none', 'no double-tap zoom on the page, nor on the board', zoom.join(', '));
+  const icons = await iconProblems(page);
+  check(who, !icons, 'the site’s icon loads here too', icons);
   // iPhones zoomed anyway: the board must cancel each touch's end, which is what stops it there
   if (touch) {
     await page.evaluate(() => document.addEventListener('touchend', e => { window.touchEndCancelled = e.defaultPrevented; }, { once: true }));
