@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+  <!-- The site's icon: a hexagonal cell in the board's colours, with the white rook (cburnett pieces by
+       Colin M.L. Burnett, GPL, as on the boards) in the middle. The PNG and ICO copies are made from
+       this file by tools/build-icons.mjs. -->
+  <polygon points="62.5,32 47.25,58.41 16.75,58.41 1.5,32 16.75,5.59 47.25,5.59" fill="#7f9fb0" stroke="#f2c46d" stroke-width="3" stroke-linejoin="round"/>
+  <g transform="translate(32 32) scale(1.25) translate(-22.5 -24)" fill="#fff" fill-rule="evenodd" stroke="#000" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 39h27v-3H9v3zm3-3v-4h21v4H12zm-1-22V9h4v2h5V9h5v2h5V9h4v5" stroke-linecap="butt"/>
+    <path d="M34 14l-3 3H14l-3-3"/>
+    <path d="M31 17v12.5H14V17" stroke-linecap="butt" stroke-linejoin="miter"/>
+    <path d="M31 29.5l1.5 2.5h-20l1.5-2.5"/>
+    <path d="M11 14h23" fill="none" stroke-linejoin="miter"/>
+  </g>
+</svg>
