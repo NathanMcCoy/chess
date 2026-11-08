@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import hex from '../site/js/variants/hex.js';
 import chess from '../site/js/variants/chess.js';
-import { chooseMove, evaluate, features, startingWeights, size, TYPES } from '../site/js/bot/bot.js';
+import { chooseMove, evaluate, startingWeights, size, usable, TYPES } from '../site/js/bot/bot.js';
 
 // A hex position from { cell: piece } (uppercase White), as in hex.test.mjs
 const { files, cells } = hex.geometry;
@@ -22,12 +22,16 @@ function hexPosition(pieces, turn = 'w') {
   }).join('/');
   return `${layout} ${turn} - 0 1`;
 }
-const weights = v => startingWeights(v.id, v.engine.cells);
+const weights = v => startingWeights(v.id, v.engine.cells, v.engine.extraNames);
 // Weights with every number random: anything true for these is true whatever training makes
 function randomWeights(v, seed = 1) {
   const w = weights(v);
   let x = seed;
-  w.values = w.values.map(() => { x = (x * 16807) % 2147483647; return (x / 2147483647) * 2 - 1; });
+  const r = () => { x = (x * 16807) % 2147483647; return (x / 2147483647) * 2 - 1; };
+  w.values = w.values.map(r);
+  w.endgame = w.endgame.map(r);
+  w.extras.middle = w.extras.middle.map(r);
+  w.extras.end = w.extras.end.map(r);
   return w;
 }
 // A game of `n` moves, each picked by a fixed sequence from the legal ones
@@ -72,13 +76,25 @@ for (const v of [hex, chess]) {
     assert.deepEqual(white, black);
   });
 
-  test(`${v.id}: the start is even whatever the weights, and features() adds up to evaluate()`, () => {
+  test(`${v.id}: the start is even whatever the weights: every extra is 0 there, and the phase 1`, () => {
     const w = randomWeights(v);
     assert.equal(w.values.length, size(e.cells));
     assert.ok(Math.abs(evaluate(e, e.from(v.start()), w)) < 1e-9);
+    assert.deepEqual(e.extras(e.from(v.start())), e.extraNames.map(() => 0));
+    assert.equal(e.phase(e.from(v.start())), 1);
+  });
+
+  test(`${v.id}: a version 1 weights file (no endgame, no extras) judges as before`, () => {
+    const w = randomWeights(v);
+    const old = { variant: v.id, cells: e.cells, values: w.values };
+    assert.ok(usable(old, e) && usable(w, e) && !usable({ ...w, values: w.values.slice(1) }, e) && !usable({ ...w, extras: { middle: [1], end: [1] } }, e) === (e.extraNames.length !== 1));
     const pos = e.from(v.replay(v.start(), someGame(v, 15)).states.at(-1));
-    const sum = [...features(e, pos, e.cells)].reduce((s, f) => s + Math.sign(f) * w.values[Math.abs(f) - 1], 0);
-    assert.ok(Math.abs(sum - evaluate(e, pos, w)) < 1e-9);
+    let sum = 0;   // the version 1 sum: a piece's value and its value on its cell, White's less Black's
+    for (const [t, i, c] of e.pieces(pos)) {
+      const k = TYPES.indexOf(t), x = w.values[k] + w.values[TYPES.length + k * e.cells + (c === 'w' ? i : e.mirror(i))];
+      sum += c === 'w' ? x : -x;
+    }
+    assert.ok(Math.abs(evaluate(e, pos, old) - sum) < 1e-9);
   });
 
   test(`${v.id}: from the start it gives a legal move, in its time`, () => {
@@ -98,6 +114,19 @@ test('hex: it finds mate in one (Qc6#)', () => {
 test('hex: it takes a queen left alone', () => {
   const r = chooseMove(hex, { start: hexPosition({ a6: 'k', l1: 'K', f3: 'R', f8: 'q' }) }, weights(hex), { maxDepth: 2, timeMs: 60000 });
   assert.equal(r.move, 'f3f8');
+});
+
+test('hex: the extras, worked out by hand for one position', () => {
+  // White: king g1 (q 1, r 4), pawns f2 (0, 4) and g2 (1, 3), knight f6 (the middle), rook e9.
+  // Black: king f11 (0, -5), pawn b7.
+  const e = hex.engine;
+  const pos = e.from(hexPosition({ g1: 'K', f2: 'P', g2: 'P', f6: 'N', e9: 'R', f11: 'k', b7: 'p' }));
+  const x = Object.fromEntries(e.extraNames.map((n, k) => [n, e.extras(pos)[k]]));
+  assert.equal(x['mobility N'], 12);                 // all 12 of the middle knight's cells are empty
+  assert.equal(x['passed pawns'], 2 - 1);            // f2 and g2: no black pawn ahead on e-h; b7: no white pawn on a-c
+  assert.equal(x['pawns by the king'], 2);           // f2 and g2 both touch g1 through a side: (-1, 0) and (0, -1)
+  assert.equal(x['pieces near the enemy king'], 1);  // White's rook e9 is two steps from Black's king f11
+  assert.equal(e.phase(pos), 3 / 26);                // a knight (1) and a rook (2) left, of 26 at the start
 });
 
 test('hex: no move once the game is over', () => {

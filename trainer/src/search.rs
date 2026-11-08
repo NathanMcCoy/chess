@@ -13,25 +13,43 @@ const MAX_PLY: usize = 128;
 pub const TYPES: usize = 6;
 
 // --- The judgement --------------------------------------------------------------------------------
-// weights: the six piece values, then each kind's value on each cell from its own side (bot.js)
+// As bot.js: for the middle game (mid) and the endgame (end), the six piece values then each kind's
+// value on each cell from its own side; and what each of the extras is worth in each. The two are
+// blended by the phase.
+#[derive(Clone)]
+pub struct Weights { pub mid: Vec<f64>, pub end: Vec<f64>, pub xmid: [f64; EXTRAS], pub xend: [f64; EXTRAS] }
+impl Weights {
+    fn has_extras(&self) -> bool { self.xmid.iter().chain(self.xend.iter()).any(|&x| x != 0.0) }
+}
+
+// How good the position is for White, in pawns: added up in the same order as bot.js
 #[inline]
-pub fn evaluate(r: &Rules, p: &Pos, w: &[f64]) -> f64 {
-    let mut score = 0.0;
+pub fn evaluate(r: &Rules, p: &Pos, w: &Weights) -> f64 {
+    let (mut mg, mut eg) = (0.0, 0.0);
     for i in 0..CELLS {
         let pc = p.board[i];
         if pc == 0 { continue; }
         let k = (kind(pc) - 1) as usize;
         let white = side(pc) == 0;
-        let cell = if white { i } else { r.g.mirror[i] as usize };
-        let x = w[k] + w[TYPES + k * CELLS + cell];
-        if white { score += x } else { score -= x }
+        let at = TYPES + k * CELLS + if white { i } else { r.g.mirror[i] as usize };
+        let s = if white { 1.0 } else { -1.0 };
+        mg += s * (w.mid[k] + w.mid[at]);
+        eg += s * (w.end[k] + w.end[at]);
+    }
+    let ph = r.phase(p);
+    let mut score = mg * ph + eg * (1.0 - ph);
+    if w.has_extras() {
+        let x = r.extras(p);
+        for k in 0..EXTRAS { score += (w.xmid[k] * ph + w.xend[k] * (1.0 - ph)) * x[k]; }
     }
     score
 }
 
-// The same sum as the weights counted: index + 1, negative for Black's (as bot.js's features())
-pub fn features(r: &Rules, p: &Pos) -> Vec<i32> {
-    let mut out = Vec::with_capacity(72);
+// What training needs of a position: each weight counted (index + 1, negative for Black's), the
+// phase, and the extras
+pub struct Sample { pub f: Vec<i32>, pub ph: f64, pub x: [f64; EXTRAS] }
+pub fn sample(r: &Rules, p: &Pos) -> Sample {
+    let mut f = Vec::with_capacity(72);
     for i in 0..CELLS {
         let pc = p.board[i];
         if pc == 0 { continue; }
@@ -39,10 +57,10 @@ pub fn features(r: &Rules, p: &Pos) -> Vec<i32> {
         let white = side(pc) == 0;
         let cell = if white { i } else { r.g.mirror[i] as usize };
         let s = if white { 1 } else { -1 };
-        out.push(s * (k as i32 + 1));
-        out.push(s * ((TYPES + k * CELLS + cell) as i32 + 1));
+        f.push(s * (k as i32 + 1));
+        f.push(s * ((TYPES + k * CELLS + cell) as i32 + 1));
     }
-    out
+    Sample { f, ph: r.phase(p), x: r.extras(p) }
 }
 
 // --- The table of positions already worked out ----------------------------------------------------------
@@ -52,7 +70,7 @@ const TABLE_BITS: usize = 18;
 
 pub struct Searcher<'a> {
     r: &'a Rules,
-    w: Vec<f64>,
+    w: Weights,
     table: Vec<Entry>,
     stamp: u32,
     nodes: u64,
@@ -83,7 +101,7 @@ pub struct Choice { pub mv: Option<Move>, pub score: f64, pub depth: u32, pub no
 const VALUE: [i32; 7] = [0, 1, 3, 3, 5, 9, 0];
 
 impl<'a> Searcher<'a> {
-    pub fn new(r: &'a Rules, w: Vec<f64>) -> Searcher<'a> {
+    pub fn new(r: &'a Rules, w: Weights) -> Searcher<'a> {
         Searcher {
             r, w, table: vec![Entry::default(); 1 << TABLE_BITS], stamp: 0, nodes: 0, limit: 0, stopped: false,
             killers: [[u16::MAX; 2]; MAX_PLY], history: vec![0; CELLS * CELLS], path: Vec::new(),
@@ -91,7 +109,7 @@ impl<'a> Searcher<'a> {
             seen: Seen::default(),
         }
     }
-    pub fn set_weights(&mut self, w: Vec<f64>) { self.w = w; }
+    pub fn set_weights(&mut self, w: &Weights) { self.w = w.clone(); }
 
     fn judge(&self, p: &Pos) -> f64 { let s = evaluate(self.r, p, &self.w); if p.turn == 0 { s } else { -s } }
 

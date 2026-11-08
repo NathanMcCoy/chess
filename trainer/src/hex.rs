@@ -43,7 +43,15 @@ pub struct Geometry {
     pub pawn_start: [[bool; CELLS]; 2],
     pub last: [[bool; CELLS]; 2],
     pub start: [u8; CELLS],
+    // For extras() (as in hex.js): the cells within two steps of each cell, and for a pawn of each
+    // side on each cell, where an enemy pawn would stop it being passed
+    pub near: Vec<Vec<u8>>,
+    pub front: [Vec<Vec<u8>>; 2],
 }
+
+// What the bot judges besides where each piece stands, in the order of hex.js's EXTRAS
+pub const EXTRAS: usize = 9;
+pub const EXTRA_NAMES: [&str; EXTRAS] = ["mobility N", "mobility B", "mobility R", "mobility Q", "mobility K", "passed pawns", "passed pawns, how far up", "pawns by the king", "pieces near the enemy king"];
 
 const EDGES: [(i32, i32); 6] = [(0, -1), (1, -1), (1, 0), (0, 1), (-1, 1), (-1, 0)];
 const CORNERS: [(i32, i32); 6] = [(1, -2), (2, -1), (1, 1), (-1, 2), (-2, 1), (-1, -1)];
@@ -60,6 +68,7 @@ impl Geometry {
             pawn_forward: [[-1; CELLS]; 2], pawn_back: [[-1; CELLS]; 2],
             pawn_captures: [[[-1; CELLS]; 2]; 2], pawn_from: [[[-1; CELLS]; 2]; 2],
             pawn_start: [[false; CELLS]; 2], last: [[false; CELLS]; 2], start: [0; CELLS],
+            near: Vec::new(), front: [Vec::new(), Vec::new()],
         };
         let mut n = 0;
         for q in -RADIUS..=RADIUS {
@@ -108,6 +117,16 @@ impl Geometry {
             let dist = q.abs().max(r.abs()).max((q + r).abs()) as f64;
             g.info[i] = [(high - height[i]) / (high - low), 1.0 - dist / RADIUS as f64];
         }
+        let (gq, gr) = (g.q, g.r);
+        let distance = |i: usize, j: usize| { let (dq, dr) = (gq[j] - gq[i], gr[j] - gr[i]); dq.abs().max(dr.abs()).max((dq + dr).abs()) };
+        let cells_where = |keep: &dyn Fn(usize, usize) -> bool| -> Vec<Vec<u8>> {
+            (0..CELLS).map(|i| (0..CELLS).filter(|&j| keep(i, j)).map(|j| j as u8).collect()).collect()
+        };
+        g.near = cells_where(&|i, j| j != i && distance(i, j) <= 2);
+        g.front = [
+            cells_where(&|i, j| (gq[j] - gq[i]).abs() <= 1 && height[j] < height[i]),
+            cells_where(&|i, j| (gq[j] - gq[i]).abs() <= 1 && height[j] > height[i]),
+        ];
         for f in 0..11u8 {
             g.last[0][g.cell(f, g.file_len[f as usize]).unwrap()] = true;
             g.last[1][g.cell(f, 1).unwrap()] = true;
@@ -410,6 +429,74 @@ impl Rules {
     // (as hex.js: no pieces but the kings, or one knight or bishop besides them)
     pub fn drawn(&self, p: &Pos) -> bool {
         p.half >= 100 || (p.majors == 0 && p.minors <= 1)
+    }
+
+    // How much material is left (knights and bishops 1, rooks 2, queens 4; 26 at the start), 0 to 1
+    pub fn phase(&self, p: &Pos) -> f64 {
+        let mut n = 0u32;
+        for &pc in p.board.iter() { n += match kind(pc) { KNIGHT | BISHOP => 1, ROOK => 2, QUEEN => 4, _ => 0 }; }
+        (n as f64 / 26.0).min(1.0)
+    }
+
+    // What the bot judges besides where the pieces stand, White's less Black's: exactly as extras()
+    // in hex.js, in the same order (so the sums come out the same to the last digit)
+    pub fn extras(&self, p: &Pos) -> [f64; EXTRAS] {
+        let g = &self.g;
+        let b = &p.board;
+        let reach = |i: usize, c: u8, table: &[[i16; CELLS]], slides: bool| -> i32 {
+            let mut n = 0;
+            for dir in table {
+                let mut j = dir[i];
+                while j >= 0 {
+                    let t = b[j as usize];
+                    if t == 0 { n += 1; if !slides { break; } j = dir[j as usize]; continue; }
+                    if side(t) != c { n += 1; }
+                    break;
+                }
+            }
+            n
+        };
+        let mut mob = [[0i32; 5]; 2];
+        let mut passed = [0i32; 2];
+        let mut far = [0f64; 2];
+        for i in 0..CELLS {
+            let pc = b[i];
+            if pc == 0 { continue; }
+            let c = side(pc);
+            let s = c as usize;
+            match kind(pc) {
+                KNIGHT => mob[s][0] += reach(i, c, &g.knight, false),
+                BISHOP => mob[s][1] += reach(i, c, &g.corners, true),
+                ROOK => mob[s][2] += reach(i, c, &g.edges, true),
+                QUEEN => mob[s][3] += reach(i, c, &g.edges, true) + reach(i, c, &g.corners, true),
+                KING => mob[s][4] += reach(i, c, &g.edges, false) + reach(i, c, &g.corners, false),
+                _ => {
+                    let enemy_pawn = PAWN | ((c ^ 1) << 3);
+                    if !g.front[s][i].iter().any(|&j| b[j as usize] == enemy_pawn) {
+                        passed[s] += 1;
+                        far[s] += g.info[if c == 0 { i } else { g.mirror[i] as usize }][0];
+                    }
+                }
+            }
+        }
+        let shield = |c: u8| -> i32 {
+            let k = p.kings[c as usize];
+            if k < 0 { return 0; }
+            let own_pawn = PAWN | (c << 3);
+            (0..6).filter(|&d| { let j = g.edges[d][k as usize]; j >= 0 && b[j as usize] == own_pawn }).count() as i32
+        };
+        let near = |c: u8| -> i32 {   // the enemy's knights, bishops, rooks and queens near side c's king
+            let k = p.kings[c as usize];
+            if k < 0 { return 0; }
+            g.near[k as usize].iter().filter(|&&j| { let t = b[j as usize]; t != 0 && side(t) != c && matches!(kind(t), KNIGHT | BISHOP | ROOK | QUEEN) }).count() as i32
+        };
+        let mut x = [0f64; EXTRAS];
+        for k in 0..5 { x[k] = (mob[0][k] - mob[1][k]) as f64; }
+        x[5] = (passed[0] - passed[1]) as f64;
+        x[6] = far[0] - far[1];
+        x[7] = (shield(0) - shield(1)) as f64;
+        x[8] = (near(1) - near(0)) as f64;
+        x
     }
 
     pub fn move_text(&self, m: &Move) -> String {

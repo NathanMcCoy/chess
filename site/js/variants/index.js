@@ -16,6 +16,8 @@
 // which only the variant understands. A bot uses nothing else, so one bot plays every variant.
 //   cells, mirror(i)     how many cells; cell i as Black sees it (for "this piece is well placed")
 //   cellInfo(i)          [how far up the board for White, 0 to 1; how near the middle, 0 to 1]
+//   phase(pos)           how much material is left: 1 at the start, 0 with only kings and pawns
+//   extraNames, extras(pos)   what else the bot judges (names, and the numbers: White's less Black's)
 //   from(state), state(pos)   a position object from a state string (null if not valid), and back
 //   moves(pos)           the legal moves;  play(pos, move): the position after one
 //   text(move)           the move as legal() writes it;  turn(pos), inCheck(pos) as above

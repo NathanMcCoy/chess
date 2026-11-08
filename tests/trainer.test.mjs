@@ -2,7 +2,7 @@
 // positions exactly as site/js/bot/bot.js does, or what it learns wouldn't fit the bot in the browser.
 // Thousands of positions from random games (and some made by hand for the rare rules) go through
 // both: the same position text, the same legal moves, the same position after every one of them,
-// the same mate / stalemate / draw, check, and the same value by random weights.
+// the same mate / stalemate / draw, check, phase and extras, and the same value by random weights.
 // Needs Rust (cargo); without it the test is skipped, and says so.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
@@ -63,10 +63,14 @@ test('the Rust trainer plays the same rules and judges the same as the site', { 
     position({ a6: 'k', a1: 'K', f10: 'P', g4: 'p' }),                           // a promotion
   );
 
-  // Random weights: whatever training makes of them, both must agree
-  const w = startingWeights('hex', e.cells);
+  // Random weights, every part of them: whatever training makes, both must agree
+  const w = startingWeights('hex', e.cells, e.extraNames);
   let y = 7;
-  w.values = w.values.map(() => { y = (y * 16807) % 2147483647; return Math.round(((y / 2147483647) * 4 - 2) * 1e4) / 1e4; });
+  const r = () => { y = (y * 16807) % 2147483647; return Math.round(((y / 2147483647) * 4 - 2) * 1e4) / 1e4; };
+  w.values = w.values.map(r);
+  w.endgame = w.endgame.map(r);
+  w.extras.middle = w.extras.middle.map(r);
+  w.extras.end = w.extras.end.map(r);
   const tmp = mkdtempSync(join(tmpdir(), 'trainer-check-'));
   const file = join(tmp, 'w.json');
   writeFileSync(file, JSON.stringify(w));
@@ -78,7 +82,7 @@ test('the Rust trainer plays the same rules and judges the same as the site', { 
 
   const seen = { ep: 0, promotion: 0, check: 0, mate: 0, stalemate: 0, drawn: 0 };
   lines.forEach((line, k) => {
-    const [state, moves, status, check, value, children] = line.replace(/\r$/, '').split('\t');
+    const [state, moves, status, check, value, children, phase, extras] = line.replace(/\r$/, '').split('\t');
     const pos = e.from(states[k]);
     const where = `position ${k}: ${states[k]}`;
     assert.equal(state, e.state(pos), `${where}: the text`);
@@ -87,6 +91,8 @@ test('the Rust trainer plays the same rules and judges the same as the site', { 
     const jsStatus = !list.length ? (e.noMoves(pos).winner ? 'mate' : 'stalemate') : e.drawn(pos) ? 'drawn' : '-';
     assert.equal(status, jsStatus, `${where}: how it stands`);
     assert.equal(check, String(e.inCheck(pos)), `${where}: check`);
+    assert.equal(Number(phase), e.phase(pos), `${where}: the phase`);
+    assert.deepEqual(extras.split(',').map(Number), e.extras(pos), `${where}: the extras (${e.extraNames.join(', ')})`);
     assert.ok(Math.abs(Number(value) - evaluate(e, pos, w)) < 1e-9, `${where}: value ${value} against ${evaluate(e, pos, w)}`);
     const after = children ? children.split('|') : [];
     list.forEach(([text, m], i) => assert.equal(after[i], e.state(e.play(pos, m)), `${where}: after ${text}`));

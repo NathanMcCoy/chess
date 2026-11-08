@@ -257,7 +257,73 @@ const MIRROR = CELLS.map(c => BY_NAME.get(mirror(c.name)));
 // middle (1 at f6, 0 round the edge): flat-topped cells, so a cell's height is r + q / 2
 const HEIGHT = CELLS.map(c => c.r + c.q / 2), LOW = Math.min(...HEIGHT), HIGH = Math.max(...HEIGHT);
 const CELL_INFO = CELLS.map((c, i) => [(HIGH - HEIGHT[i]) / (HIGH - LOW), 1 - Math.max(Math.abs(c.q), Math.abs(c.r), Math.abs(c.q + c.r)) / RADIUS]);
+
+// What the bot judges besides where each piece stands (bot.js), each as White's less Black's. The Rust
+// trainer (trainer/src/hex.rs) works out the same numbers, and tests/trainer.test.mjs checks they match.
+//   mobility N, B, R, Q, K: the cells that kind of piece could move to (empty or an enemy's), ignoring
+//     whether the move would leave the king in check
+//   passed pawns: pawns with no enemy pawn further up their own file or the files either side (where
+//     one could block or take them); and the same pawns, each counted by how far up it is (0 to 1)
+//   pawns by the king: a side's own pawns on the six cells next to its king (through the sides)
+//   pieces near the enemy king: knights, bishops, rooks and queens within two steps of it
+const EXTRAS = ['mobility N', 'mobility B', 'mobility R', 'mobility Q', 'mobility K', 'passed pawns', 'passed pawns, how far up', 'pawns by the king', 'pieces near the enemy king'];
+const hexDistance = (i, j) => { const dq = CELLS[j].q - CELLS[i].q, dr = CELLS[j].r - CELLS[i].r; return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr)); };
+const NEAR = CELLS.map((_, i) => CELLS.map((_, j) => j).filter(j => j !== i && hexDistance(i, j) <= 2));
+// For a pawn of each side on each cell, the cells an enemy pawn would have to be on to stop it
+// being passed: one file either side or its own, further up (from that side's point of view)
+const FRONT = {
+  w: CELLS.map((c, i) => CELLS.map((_, j) => j).filter(j => Math.abs(CELLS[j].q - c.q) <= 1 && HEIGHT[j] < HEIGHT[i])),
+  b: CELLS.map((c, i) => CELLS.map((_, j) => j).filter(j => Math.abs(CELLS[j].q - c.q) <= 1 && HEIGHT[j] > HEIGHT[i])),
+};
+// How much material is left, for blending middle-game and endgame values: knights and bishops 1,
+// rooks 2, queens 4, so the start (both sides) is 26
+const PHASE = { N: 1, B: 1, R: 2, Q: 4 }, PHASE_START = 26;
+function extras(s) {
+  const b = s.board;
+  // The cells a piece on i could move to in directions `dirs` (all the way along them if it slides)
+  const reach = (i, c, dirs, slides) => {
+    let n = 0;
+    for (const d of dirs) {
+      for (let j = step(i, d); j >= 0; j = slides ? step(j, d) : -1) {
+        if (!b[j]) { n++; continue; }
+        if (colourOf(b[j]) !== c) n++;
+        break;
+      }
+    }
+    return n;
+  };
+  const mob = { w: [0, 0, 0, 0, 0], b: [0, 0, 0, 0, 0] };
+  const passed = { w: 0, b: 0 }, far = { w: 0, b: 0 };
+  for (let i = 0; i < CELLS.length; i++) {
+    const p = b[i];
+    if (!p) continue;
+    const c = colourOf(p), t = typeOf(p);
+    if (t === 'N') mob[c][0] += reach(i, c, KNIGHT, false);
+    else if (t === 'B') mob[c][1] += reach(i, c, CORNERS, true);
+    else if (t === 'R') mob[c][2] += reach(i, c, EDGES, true);
+    else if (t === 'Q') mob[c][3] += reach(i, c, EDGES, true) + reach(i, c, CORNERS, true);
+    else if (t === 'K') mob[c][4] += reach(i, c, EDGES, false) + reach(i, c, CORNERS, false);
+    else if (!FRONT[c][i].some(j => b[j] === (c === 'w' ? 'p' : 'P'))) {
+      passed[c]++;
+      far[c] += CELL_INFO[c === 'w' ? i : MIRROR[i]][0];
+    }
+  }
+  const shield = c => { const k = kingOf(b, c); return k < 0 ? 0 : EDGES.filter(d => { const j = step(k, d); return j >= 0 && b[j] === (c === 'w' ? 'P' : 'p'); }).length; };
+  const near = c => {   // the enemy's pieces near side c's king
+    const k = kingOf(b, c);
+    return k < 0 ? 0 : NEAR[k].filter(j => b[j] && colourOf(b[j]) !== c && 'NBRQ'.includes(typeOf(b[j]))).length;
+  };
+  return [...mob.w.map((x, k) => x - mob.b[k]), passed.w - passed.b, far.w - far.b, shield('w') - shield('b'), near('b') - near('w')];
+}
+
 const engine = {
+  extraNames: EXTRAS,
+  extras,
+  phase: s => {
+    let n = 0;
+    for (const p of s.board) if (p) n += PHASE[typeOf(p)] || 0;
+    return Math.min(1, n / PHASE_START);
+  },
   cells: CELLS.length,
   mirror: i => MIRROR[i],
   cellInfo: i => CELL_INFO[i],

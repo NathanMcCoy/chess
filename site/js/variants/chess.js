@@ -14,6 +14,15 @@ const board = new Chess();
 let loaded = null;   // the FEN on `board` now: a search asks several things of each position in a row
 const use = fen => { if (fen !== loaded) { board.load(fen, { skipValidation: true }); loaded = fen; } return board; };
 const engine = {
+  // Nothing judged beyond where the pieces stand, for now: square chess has Stockfish
+  extraNames: [],
+  extras: () => [],
+  // How much material is left (knights and bishops 1, rooks 2, queens 4; 24 at the start)
+  phase: fen => {
+    let n = 0;
+    for (const ch of fen.split(' ')[0]) n += { n: 1, b: 1, r: 2, q: 4 }[ch.toLowerCase()] || 0;
+    return Math.min(1, n / 24);
+  },
   cells: 64,
   mirror: i => (i % 8) + 8 * (7 - Math.floor(i / 8)),
   // How far up the board for White (rank 1 is 0, rank 8 is 1), and how near the middle (1 in it)

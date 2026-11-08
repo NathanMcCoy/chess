@@ -21,39 +21,54 @@ const QUIET_PLY = 32;   // how deep capture sequences are followed, at most
 const CHECK_PLY = 16;   // checks make the search look one move further, up to this many moves in
 
 // --- Weights ------------------------------------------------------------------------------------
-// One flat list: the six piece values, then each piece kind's value on each cell (from its own
-// side's point of view: Black's cells are mirrored). The king's piece value is never used.
+// A weights file (version 2):
+//   values:  the six piece values, then each piece kind's value on each cell (from its own side's
+//            point of view: Black's cells are mirrored), for the middle game. The king's piece
+//            value is never used.
+//   endgame: the same list, for when only kings and pawns are left
+//   extras:  { names, middle, end }: what each of the variant's extras (variants/index.js) is worth,
+//            in the middle game and the endgame
+// The bot blends middle game and endgame by the variant's phase(): 1 at the start, 0 at the end.
+// A version 1 file has only `values`: its endgame is the same, and its extras are worth nothing.
 export const size = cells => TYPES.length * (1 + cells);
 export const valueIndex = t => TYPES.indexOf(t);
 export const cellIndex = (t, cell, cells) => TYPES.length + TYPES.indexOf(t) * cells + cell;
 
-export function startingWeights(variantId, cells) {
+export function startingWeights(variantId, cells, extraNames = []) {
   const values = new Array(size(cells)).fill(0);
   Object.entries({ P: 1, N: 3, B: 3, R: 5, Q: 9 }).forEach(([t, v]) => { values[valueIndex(t)] = v; });
-  return { variant: variantId, cells, generation: 0, values };
+  const none = () => new Array(extraNames.length).fill(0);
+  return { variant: variantId, version: 2, cells, generation: 0, values, endgame: [...values], extras: { names: [...extraNames], middle: none(), end: none() } };
 }
 
-// How good the position is for White, in pawns
+// How good the position is for White, in pawns. (The Rust trainer adds it up in the same order, so
+// the two agree to the last digit: tests/trainer.test.mjs checks it.)
 export function evaluate(e, pos, w) {
-  const v = w.values, cells = w.cells;
-  let score = 0;
+  const v = w.values, end = w.endgame || v, cells = w.cells;
+  let mg = 0, eg = 0;
   for (const [t, i, c] of e.pieces(pos)) {
     const k = TYPES.indexOf(t);
-    const x = v[k] + v[TYPES.length + k * cells + (c === 'w' ? i : e.mirror(i))];
-    score += c === 'w' ? x : -x;
+    const at = TYPES.length + k * cells + (c === 'w' ? i : e.mirror(i));
+    const s = c === 'w' ? 1 : -1;
+    mg += s * (v[k] + v[at]);
+    eg += s * (end[k] + end[at]);
+  }
+  const ph = e.phase ? e.phase(pos) : 1;
+  let score = mg * ph + eg * (1 - ph);
+  const x = w.extras && e.extras ? e.extras(pos) : [];
+  if (x.length && w.extras.middle?.length === x.length) {
+    for (let k = 0; k < x.length; k++) score += (w.extras.middle[k] * ph + w.extras.end[k] * (1 - ph)) * x[k];
   }
   return score;
 }
 
-// The same sum as a list of weights counted, each as its index + 1, negative for Black's: what
-// training adjusts. (One small number list per position keeps training's memory down.)
-export function features(e, pos, cells) {
-  const out = [];
-  for (const [t, i, c] of e.pieces(pos)) {
-    const s = c === 'w' ? 1 : -1;
-    out.push(s * (valueIndex(t) + 1), s * (cellIndex(t, c === 'w' ? i : e.mirror(i), cells) + 1));
-  }
-  return Int32Array.from(out);
+// Is this a weights file the bot can use for this variant's engine?
+export function usable(w, e) {
+  const n = size(e.cells);
+  return !!w && Array.isArray(w.values) && w.values.length === n
+    && (w.endgame === undefined || (Array.isArray(w.endgame) && w.endgame.length === n))
+    && (w.extras === undefined || (Array.isArray(w.extras.middle) && w.extras.middle.length === (e.extraNames || []).length
+      && Array.isArray(w.extras.end) && w.extras.end.length === w.extras.middle.length));
 }
 
 // --- The search ---------------------------------------------------------------------------------

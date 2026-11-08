@@ -7,8 +7,9 @@
 //   cargo run --release -- compare A.json start         a match between two weights files
 //   cargo run --release -- bench                        how fast it searches
 //   cargo run --release -- check --weights W.json       for tests/trainer.test.mjs: reads positions
-//       (one a line) and writes, for each: its legal moves, the position after each, how it stands
-//       (mate, stalemate, drawn or -), and its value for White by the weights
+//       (one a line) and writes, for each: its legal moves, how it stands (mate, stalemate, drawn or
+//       -), check, its value for White by the weights, the position after each move, its phase,
+//       and its extras
 //
 // Run from the chess folder or trainer/; paths are as given.
 mod hex;
@@ -52,7 +53,9 @@ fn check(rules: &hex::Rules, args: &[String]) {
         let status = if list.is_empty() { if rules.in_check(&p) { "mate" } else { "stalemate" } } else if rules.drawn(&p) { "drawn" } else { "-" };
         let names: Vec<&str> = moves.iter().map(|m| m.0.as_str()).collect();
         let children: Vec<&str> = moves.iter().map(|m| m.1.as_str()).collect();
-        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}", rules.format(&p), names.join(" "), status, rules.in_check(&p), search::evaluate(rules, &p, &w), children.join("|")).unwrap();
+        let extras: Vec<String> = rules.extras(&p).iter().map(|x| x.to_string()).collect();
+        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", rules.format(&p), names.join(" "), status, rules.in_check(&p), search::evaluate(rules, &p, &w),
+            children.join("|"), rules.phase(&p), extras.join(",")).unwrap();
     }
 }
 
