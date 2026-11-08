@@ -177,6 +177,10 @@ export function initAccounts({ saved, useSaved }) {
     pad.clear();
     dlg.showModal();
     setUp();   // after showing the box: its board is measured again on the next screen refresh
+    // And sized now as well. The board was drawn while the box was closed, so it's 0×0 until
+    // chessground's resize watcher runs on the next screen refresh, and anything measuring it in
+    // that moment found nothing to tap (the tests' lost first tap, found Nov 7)
+    pad.redraw();
     $('acc-name').focus();
   }
 
