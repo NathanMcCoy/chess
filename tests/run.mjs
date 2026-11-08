@@ -824,6 +824,8 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
       'playing the bot as Black: it moves first, with you at the bottom', `${await status(bp)} | ${await names()}`);
     const engine = await bp.evaluate(() => document.body.dataset.botEngine);
     check(who, engine === 'wasm', 'the bot thinks with the WebAssembly engine', engine);
+    const judge = await bp.evaluate(() => document.body.dataset.botJudge);
+    check(who, judge === 'net', 'the bot judges by the neural network', judge);
     // A move of yours (the first legal one, whatever the bot played), and its reply
     const saved = await bp.evaluate(k => JSON.parse(localStorage.getItem(k)), HEX_SAVE);
     const [, from, to] = hex.legal(hex.replay(saved.start, saved.moves).states.at(-1))[0].match(/^([a-l]\d{1,2})([a-l]\d{1,2})/);
@@ -861,6 +863,22 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
     const fallback = await nw.evaluate(() => document.body.dataset.botEngine);
     check(who, fallback === 'js' && (await status(nw)) === 'Your move.', 'without the WebAssembly engine, the bot plays with bot.js', `${fallback} | ${await status(nw)}`);
     await nw.close();
+
+    // Without the network file (blocked here), the WebAssembly engine judges by the weights
+    const nn = await freshPage();
+    await nn.route('**/hex-net.bin', r => r.fulfill({ status: 404, body: 'gone' }));
+    await nn.goto('/hex');
+    await nn.locator('.hex-pieces piece').first().waitFor();
+    await nn.locator('#play-bot').click();
+    const nd3 = nn.locator('#bot-dialog[open]');
+    await nd3.waitFor();
+    await nd3.locator('input[name=bot-side][value=b]').check();
+    await nd3.locator('input[name=bot-level][value="1"]').check();
+    await nd3.getByRole('button', { name: 'Start' }).click();
+    await nn.waitForFunction(() => document.querySelectorAll('#moves button').length === 1, null, { timeout: 15000 });
+    const noNet = await nn.evaluate(() => `${document.body.dataset.botEngine} ${document.body.dataset.botJudge}`);
+    check(who, noNet === 'wasm weights' && (await status(nn)) === 'Your move.', 'without the network file, the bot plays judging by the weights', `${noNet} | ${await status(nn)}`);
+    await nn.close();
   }
 
   // Against a person: made from the chess page's Play a friend, joined by its link, watched from Live

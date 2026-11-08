@@ -19,6 +19,8 @@ use crate::arg;
 use engine::hex::*;
 use engine::search::*;
 use engine::felipe::Felipe;
+use engine::nn::Net;
+use std::sync::Arc;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -97,12 +99,13 @@ fn opening(r: &Rules, rng: &mut Rng) -> Vec<Move> {
 pub struct Game { pub result: f64, pub positions: Vec<(Sample, f64)> }
 
 // One game; the result is White's points
-// Who plays a side: our bot (which weights, by number, and how many positions it looks at a move),
-// or the port of Felipe Lecot's engine (felipe.rs) to a fixed depth, its own way of playing
+// Who plays a side: our bot judging by weights (which, by number, and how many positions it looks
+// at a move), our bot judging by a neural network (which, by number, and positions a move), or the
+// port of Felipe Lecot's engine (felipe.rs) to a fixed depth, its own way of playing
 #[derive(Clone, Copy)]
-pub enum Player { Bot(usize, u64), Felipe(i32) }
+pub enum Player { Bot(usize, u64), Net(usize, u64), Felipe(i32) }
 
-fn play_game(r: &Rules, s: &mut Searcher, f: &mut Felipe, opening: &[Move], weights: &[Weights], players: [Player; 2], record: bool) -> Game {
+fn play_game(r: &Rules, s: &mut Searcher, f: &mut Felipe, opening: &[Move], weights: &[Weights], nets: &[Arc<Net>], players: [Player; 2], record: bool) -> Game {
     let mut p = r.start();
     for m in opening { p = r.play(&p, m); }
     f.clear();   // a fresh table each game, as if the original were started again
@@ -121,7 +124,8 @@ fn play_game(r: &Rules, s: &mut Searcher, f: &mut Felipe, opening: &[Move], weig
         }
         if r.drawn(&p) || ply >= MAX_PLIES { return Game { result: 0.5, positions: kept }; }
         let c = match players[p.turn as usize] {
-            Player::Bot(w, nodes) => { s.set_weights(&weights[w]); s.choose(&p, nodes) }
+            Player::Bot(w, nodes) => { s.set_net(None); s.set_weights(&weights[w]); s.choose(&p, nodes) }
+            Player::Net(n, nodes) => { s.set_net(Some(nets[n].clone())); s.choose(&p, nodes) }
             Player::Felipe(depth) => {
                 let c = f.choose(&p, depth);
                 // It can come back without a move (as the original would answer an impossible one):
@@ -133,7 +137,7 @@ fn play_game(r: &Rules, s: &mut Searcher, f: &mut Felipe, opening: &[Move], weig
         // Quiet positions only (not in check, and the move isn't a capture or promotion), with what
         // the search thought of them, for White, mates as 20 pawns
         // (and only where our bot moved: an opponent's score isn't our search's)
-        if record && matches!(players[p.turn as usize], Player::Bot(..)) && !r.in_check(&p) && m.captured == 0 && m.promo == 0 {
+        if record && matches!(players[p.turn as usize], Player::Bot(..) | Player::Net(..)) && !r.in_check(&p) && m.captured == 0 && m.promo == 0 {
             let score = (if p.turn == 0 { c.score } else { -c.score }).clamp(-20.0, 20.0);
             kept.push((sample(r, &p), score));
         }
@@ -148,8 +152,8 @@ fn play_game(r: &Rules, s: &mut Searcher, f: &mut Felipe, opening: &[Move], weig
 
 struct Job { opening: Vec<Move>, players: [Player; 2], record: bool }   // players: [White, Black]
 
-// Plays every job on `threads` threads; `weights` are the weights the players name by number
-fn run_all(r: &Rules, jobs: &[Job], weights: &[Weights], threads: usize) -> Vec<Game> {
+// Plays every job on `threads` threads; `weights` and `nets` are what the players name by number
+fn run_all(r: &Rules, jobs: &[Job], weights: &[Weights], nets: &[Arc<Net>], threads: usize) -> Vec<Game> {
     let next = AtomicUsize::new(0);
     let done: Mutex<Vec<(usize, Game)>> = Mutex::new(Vec::with_capacity(jobs.len()));
     std::thread::scope(|scope| {
@@ -162,7 +166,7 @@ fn run_all(r: &Rules, jobs: &[Job], weights: &[Weights], threads: usize) -> Vec<
                     let i = next.fetch_add(1, Ordering::Relaxed);
                     if i >= jobs.len() { break; }
                     let j = &jobs[i];
-                    mine.push((i, play_game(r, &mut s, &mut f, &j.opening, weights, j.players, j.record)));
+                    mine.push((i, play_game(r, &mut s, &mut f, &j.opening, weights, nets, j.players, j.record)));
                 }
                 done.lock().unwrap().extend(mine);
             });
@@ -182,18 +186,18 @@ impl MatchResult {
 
 // Each opening twice, `a` once as each colour; a's score and its margin of error
 fn play_match(r: &Rules, a: &Weights, b: &Weights, games: usize, nodes: (u64, u64), threads: usize, rng: &mut Rng) -> MatchResult {
-    play_between(r, &[a.clone(), b.clone()], Player::Bot(0, nodes.0), Player::Bot(1, nodes.1), games, threads, rng)
+    play_between(r, &[a.clone(), b.clone()], &[], Player::Bot(0, nodes.0), Player::Bot(1, nodes.1), games, threads, rng)
 }
 
 // The same between any two players
-fn play_between(r: &Rules, weights: &[Weights], a: Player, b: Player, games: usize, threads: usize, rng: &mut Rng) -> MatchResult {
+fn play_between(r: &Rules, weights: &[Weights], nets: &[Arc<Net>], a: Player, b: Player, games: usize, threads: usize, rng: &mut Rng) -> MatchResult {
     let mut jobs = Vec::new();
     for _ in 0..games.div_ceil(2) {
         let o = opening(r, rng);
         jobs.push(Job { opening: o.clone(), players: [a, b], record: false });
         jobs.push(Job { opening: o, players: [b, a], record: false });
     }
-    let games = run_all(r, &jobs, weights, threads);
+    let games = run_all(r, &jobs, weights, nets, threads);
     // Jobs alternate: `a` is White in the even ones
     let results: Vec<f64> = games.iter().enumerate().map(|(k, g)| if k % 2 == 0 { g.result } else { 1.0 - g.result }).collect();
     let n = results.len() as f64;
@@ -217,8 +221,51 @@ pub fn vs_felipe(r: &Rules, args: &[String]) {
     let games: usize = num(args, "match", 200);
     let mut rng = Rng::new(num(args, "seed", 12345));
     let t = std::time::Instant::now();
-    let m = play_between(r, &[load(a).1], Player::Bot(0, nodes), Player::Felipe(depth), games, threads_of(args), &mut rng);
+    let m = play_between(r, &[load(a).1], &[], Player::Bot(0, nodes), Player::Felipe(depth), games, threads_of(args), &mut rng);
     println!("  {a} ({nodes} positions a move) against Felipe Lecot's engine (depth {depth}): {}, {:.0} s", m.said(), t.elapsed().as_secs_f64());
+}
+
+// A network as nn/train.py writes it (JSON), for nn.rs
+pub fn load_net(path: &str) -> Arc<Net> {
+    let v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap_or_else(|e| panic!("can't read {path}: {e}"))).expect("not JSON");
+    let acc = v["acc"].as_u64().expect("no acc") as usize;
+    let h = v["hidden"].as_u64().unwrap_or(32) as usize;   // layers 2 and 3 (32 before it was in the file)
+    let mut x: Vec<f32> = Vec::with_capacity(Net::numbers(acc, h));
+    for layer in ["l1", "l2", "l3", "l4"] {
+        for part in ["w", "b"] {
+            x.extend(v[layer][part].as_array().expect("missing weights").iter().map(|n| n.as_f64().unwrap() as f32));
+        }
+    }
+    // The shortcut (a network from before it existed has none: worth nothing)
+    match v["psqt"].as_array() {
+        Some(a) => x.extend(a.iter().map(|n| n.as_f64().unwrap() as f32)),
+        None => x.extend(std::iter::repeat_n(0.0f32, engine::nn::INPUTS)),
+    }
+    Arc::new(Net::from_numbers(acc, h, &x).expect("the network's numbers don't add up"))
+}
+
+// net-match --net N.json --vs (A.json | start | felipe:<depth>): our bot judging by the network
+// against our bot judging by weights A, or against the port of Felipe Lecot's engine. --nodes is the
+// network's positions a move, --nodes-b the other bot's (a network is slower a position, so for a
+// fair match give it fewer: as many as it manages in the time the other takes)
+pub fn net_match(r: &Rules, args: &[String]) {
+    let net_file = arg(args, "net").expect("--net file");
+    let vs = arg(args, "vs").unwrap_or("site/data/bot/hex.json");
+    let nodes: u64 = num(args, "nodes", 2000);
+    let nodes_b: u64 = num(args, "nodes-b", nodes);
+    let games: usize = num(args, "match", 400);
+    let mut rng = Rng::new(num(args, "seed", 12345));
+    // --vs-net B.json: against another network instead (the loop: a new network against the best)
+    let vs_net = arg(args, "vs-net");
+    let nets: Vec<Arc<Net>> = std::iter::once(net_file).chain(vs_net).map(load_net).collect();
+    let (weights, other, vs) = match (vs_net, vs.strip_prefix("felipe:")) {
+        (Some(b), _) => (vec![starting()], Player::Net(1, nodes_b), b),
+        (None, Some(d)) => (vec![starting()], Player::Felipe(d.parse().expect("felipe:<depth>")), vs),
+        (None, None) => (vec![load(vs).1], Player::Bot(0, nodes_b), vs),
+    };
+    let t = std::time::Instant::now();
+    let m = play_between(r, &weights, &nets, Player::Net(0, nodes), other, games, threads_of(args), &mut rng);
+    println!("  the network {net_file} ({nodes} positions a move) against {vs}: {}, {:.0} s", m.said(), t.elapsed().as_secs_f64());
 }
 
 pub fn compare(r: &Rules, args: &[String]) {
@@ -266,7 +313,7 @@ pub fn train(r: &Rules, args: &[String]) {
             let players = match opponent { Some(d) if i < against => if i % 2 == 0 { [me, Player::Felipe(d)] } else { [Player::Felipe(d), me] }, _ => [me, me] };
             Job { opening: opening(r, &mut rng), players, record: true }
         }).collect();
-        let games = run_all(r, &jobs, &[weights.clone()], threads);
+        let games = run_all(r, &jobs, &[weights.clone()], &[], threads);
         let decided = games.iter().filter(|g| g.result != 0.5).count();
         earlier.push(games.into_iter().flat_map(|g| { let res = g.result; g.positions.into_iter().map(move |(s, sc)| (s, res, sc)) }).collect());
         if earlier.len() > keep { earlier.remove(0); }
@@ -305,7 +352,7 @@ pub fn train(r: &Rules, args: &[String]) {
                 entry["untrained"] = json!({ "games": b.games, "score": (b.score * 1000.0).round() / 1000.0 });
             }
             if let (Some(d), true) = (opponent, meter > 0) {
-                let f = play_between(r, &[learned.weights.clone()], Player::Bot(0, nodes), Player::Felipe(d), meter, threads, &mut rng);
+                let f = play_between(r, &[learned.weights.clone()], &[], Player::Bot(0, nodes), Player::Felipe(d), meter, threads, &mut rng);
                 println!("  against Felipe Lecot's engine (depth {d}): {}", f.said());
                 entry["felipe"] = json!({ "depth": d, "games": f.games, "score": (f.score * 1000.0).round() / 1000.0 });
             }

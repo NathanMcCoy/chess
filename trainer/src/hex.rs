@@ -205,6 +205,9 @@ impl Rules {
 
     pub fn start(&self) -> Pos { self.make(self.g.start, 0, -1, 0, 1) }
 
+    // A position from its cells and the side to move (no en passant, no moves played yet)
+    pub fn from_board(&self, board: [u8; CELLS], turn: u8) -> Pos { self.make(board, turn, -1, 0, 1) }
+
     fn make(&self, board: [u8; CELLS], turn: u8, ep: i16, half: u16, full: u16) -> Pos {
         let mut p = Pos { board, turn, ep, half, full, hash: 0, kings: [-1, -1], majors: 0, minors: 0 };
         p.hash = self.hash_of(&p);

@@ -6,6 +6,8 @@
 // For hex it thinks with the Rust engine compiled to WebAssembly (wasm.js: the same rules and
 // judgement, about 40 times faster, so it sees much further in the same time), and falls back to
 // bot.js if that can't load or ever fails. `engine` in the answer says which did it: 'wasm' or 'js'.
+// The WebAssembly engine judges by the neural network in /data/bot/hex-net.bin when that loads
+// (tools/build-net.mjs makes it), else by the weights; `judge` says which: 'net' or 'weights'.
 import { variant } from '../variants/index.js';
 import { chooseMove, startingWeights, usable } from './bot.js';
 import { loadEngine } from './wasm.js';
@@ -26,7 +28,17 @@ function fastFor(v, w) {
   fast[v.id] ??= fetch('/js/bot/hex-engine.wasm')
     .then(r => { if (!r.ok) throw new Error(`the engine answered ${r.status}`); return r.arrayBuffer(); })
     .then(bytes => loadEngine(bytes))
-    .then(engine => { engine.setWeights(w, v.engine.extraNames.length); return engine; })
+    .then(async engine => {
+      engine.setWeights(w, v.engine.extraNames.length);
+      engine.judge = 'weights';
+      const net = await fetch('/data/bot/hex-net.bin')
+        .then(r => (r.ok ? r.arrayBuffer() : null))
+        .catch(() => null);
+      if (net) {
+        try { engine.setNet(new Uint8Array(net)); engine.judge = 'net'; } catch { /* the weights, then */ }
+      }
+      return engine;
+    })
     .catch(() => null);
   return fast[v.id];
 }
@@ -40,7 +52,7 @@ onmessage = async ({ data }) => {
     if (engine) {
       try {
         const r = engine.choose(data.start, data.moves, data.timeMs);
-        return postMessage({ id: data.id, move: r.move, score: r.score, depth: r.depth, engine: 'wasm' });
+        return postMessage({ id: data.id, move: r.move, score: r.score, depth: r.depth, engine: 'wasm', judge: engine.judge });
       } catch { /* bot.js below */ }
     }
     const r = chooseMove(v, { start: data.start, moves: data.moves }, w, { timeMs: data.timeMs });

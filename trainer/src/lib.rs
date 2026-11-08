@@ -4,6 +4,7 @@
 pub mod hex;
 pub mod search;
 pub mod felipe;   // a port of Felipe Lecot's Hex Chess Engine, to spar with (see the file)
+pub mod nn;       // the bot's neural network (nn/train.py trains it)
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 

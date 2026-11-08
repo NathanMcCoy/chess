@@ -240,6 +240,7 @@ function startBot() {
   w.onmessage = ({ data }) => {
     if (data.id !== botAsked || !vsBot || online) return;
     document.body.dataset.botEngine = data.engine || '';   // which engine thought ('wasm' or 'js'): for the tests
+    document.body.dataset.botJudge = data.judge || '';     // and by what ('net' or 'weights'; none for 'js')
     botFor = null;
     const legal = hex.legal(played.states.at(-1));
     if (data.error || !legal.includes(data.move)) {
