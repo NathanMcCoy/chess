@@ -1,12 +1,13 @@
 // The site's own bot: it plays any variant through the variant's `engine` (see variants/index.js),
 // so the same code plays square and hexagonal chess. It runs in a Web Worker in the browser
-// (worker.js) and in Node for training (tools/train-bot.mjs) and the tests.
+// (worker.js), and in Node for the tests.
 //
 // How it chooses: it looks ahead (alpha-beta search, one move deeper each round until its time is
 // up), follows captures to the end so it doesn't stop mid-exchange, and judges the positions it
 // reaches with its weights: a value for each kind of piece, plus a bonus or penalty for each kind of
-// piece on each cell. Those weights are what it learns (tools/train-bot.mjs): it plays itself, sees
-// which positions led to wins, and changes them to predict that better.
+// piece on each cell. Those weights are what it learns, by playing itself: trainer/ (in Rust, about
+// 40 times faster than this file; tests/trainer.test.mjs checks it plays and judges exactly as here)
+// fits its quick judgement to what its search finds.
 //
 // Scores are in pawns, from the side to move's point of view. Mate is worth MATE, less the moves
 // it takes, so a quicker mate scores higher.
