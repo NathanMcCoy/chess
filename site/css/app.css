@@ -27,6 +27,10 @@ body.reviewing { --bar: 22px; }
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
+/* No double-tap zoom anywhere (tapping a piece, then a cell next to it, zoomed in on phones), and no
+   wait after each tap to see if a second one is coming. Pinch zoom still works. The boards keep their
+   stricter touch-action: none. */
+html { touch-action: manipulation; }
 body {
   background: var(--bg);
   color: var(--text);

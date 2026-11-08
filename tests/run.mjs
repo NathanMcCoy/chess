@@ -69,6 +69,8 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   await page.goto('/');
   await page.locator('#board cg-board piece').first().waitFor();
   check(who, await page.locator('#board cg-board piece').count() === 32, 'the board starts with 32 pieces');
+  const zoom = await page.evaluate(() => getComputedStyle(document.documentElement).touchAction);
+  check(who, zoom === 'manipulation', 'no double-tap zoom on the page', zoom);
   check(who, (await status(page)) === 'Your move.', 'and says it is your move', await status(page));
   const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
   check(who, over <= 0, 'nothing is wider than the screen', `${over}px over`);
@@ -636,6 +638,9 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await page.goto('/hex');
   await page.locator('.hex-pieces piece').first().waitFor();
   check(who, (await page.locator('#hexboard polygon[data-cell]').count()) === 91, 'the hex board has 91 cells');
+  // The test browsers can't double-tap to zoom, so this checks the setting that stops it on phones
+  const zoom = await page.evaluate(() => [getComputedStyle(document.documentElement).touchAction, getComputedStyle(document.getElementById('hexboard')).touchAction]);
+  check(who, zoom[0] === 'manipulation' && zoom[1] === 'none', 'no double-tap zoom on the page, nor on the board', zoom.join(', '));
   check(who, (await page.locator('.hex-pieces piece').count()) === 36, 'and 36 pieces');
   check(who, (await status(page)) === 'White to move.', 'White moves first', await status(page));
   const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);
