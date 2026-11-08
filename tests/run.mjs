@@ -822,6 +822,8 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
     const names = async () => `${await bp.locator('#bottom-player .name').innerText()} / ${await bp.locator('#top-player .name').innerText()}`;
     check(who, (await status(bp)) === 'Your move.' && (await names()) === 'You / The bot (Quick)' && c7.y > c5.y,
       'playing the bot as Black: it moves first, with you at the bottom', `${await status(bp)} | ${await names()}`);
+    const engine = await bp.evaluate(() => document.body.dataset.botEngine);
+    check(who, engine === 'wasm', 'the bot thinks with the WebAssembly engine', engine);
     // A move of yours (the first legal one, whatever the bot played), and its reply
     const saved = await bp.evaluate(k => JSON.parse(localStorage.getItem(k)), HEX_SAVE);
     const [, from, to] = hex.legal(hex.replay(saved.start, saved.moves).states.at(-1))[0].match(/^([a-l]\d{1,2})([a-l]\d{1,2})/);
@@ -843,6 +845,22 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
     await bp.locator('#bot-off').click();
     check(who, (await names()) === 'Black / White' && await bp.locator('#bot-row').isHidden(), 'Two players instead goes back to two players', await names());
     await bp.close();
+
+    // Without the WebAssembly engine (blocked here), the bot still plays, with bot.js
+    const nw = await freshPage();
+    await nw.route('**/hex-engine.wasm', r => r.fulfill({ status: 404, body: 'gone' }));
+    await nw.goto('/hex');
+    await nw.locator('.hex-pieces piece').first().waitFor();
+    await nw.locator('#play-bot').click();
+    const nd2 = nw.locator('#bot-dialog[open]');
+    await nd2.waitFor();
+    await nd2.locator('input[name=bot-side][value=b]').check();
+    await nd2.locator('input[name=bot-level][value="1"]').check();
+    await nd2.getByRole('button', { name: 'Start' }).click();
+    await nw.waitForFunction(() => document.querySelectorAll('#moves button').length === 1, null, { timeout: 15000 });
+    const fallback = await nw.evaluate(() => document.body.dataset.botEngine);
+    check(who, fallback === 'js' && (await status(nw)) === 'Your move.', 'without the WebAssembly engine, the bot plays with bot.js', `${fallback} | ${await status(nw)}`);
+    await nw.close();
   }
 
   // Against a person: made from the chess page's Play a friend, joined by its link, watched from Live

@@ -12,8 +12,8 @@
 //       and its extras
 //
 // Run from the chess folder or trainer/; paths are as given.
-mod hex;
-mod search;
+use engine::hex;
+use engine::search;
 mod train;
 
 use std::io::{BufRead, Write};

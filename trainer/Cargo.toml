@@ -2,12 +2,24 @@
 name = "trainer"
 version = "0.1.0"
 edition = "2024"
-description = "Trains the site's hex bot by self-play, fast (the browser's bot is site/js/bot/bot.js)"
+description = "The site's hex bot in Rust: the engine (also built to WebAssembly for the browser) and its trainer"
 license = "GPL-3.0-or-later"
 publish = false
 
-# For reading and writing the weights files (JSON). This program runs only on a developer's PC and
-# in CI: nothing here goes into the site or its image.
+# The engine: rules, search and judgement (src/lib.rs). Built for this PC for the trainer, and to
+# WebAssembly for the browser's bot (node tools/build-engine.mjs -> site/js/bot/hex-engine.wasm).
+[lib]
+name = "engine"
+path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
+
+# The trainer: self-play, learning and matches (src/main.rs, src/train.rs)
+[[bin]]
+name = "trainer"
+path = "src/main.rs"
+
+# For the trainer's weights files (JSON). Only on a developer's PC and in CI: the WebAssembly engine
+# doesn't use it, and trainer/ isn't in the site's image.
 [dependencies]
 serde_json = "1"
 

@@ -13,8 +13,8 @@
 // change: values,shape,cells,extras), --out (default site/data/bot/hex.json), --seed.
 // compare A B: --match, --nodes, --nodes-b.
 use crate::arg;
-use crate::hex::*;
-use crate::search::*;
+use engine::hex::*;
+use engine::search::*;
 use serde_json::{json, Value};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Mutex;
@@ -22,11 +22,7 @@ use std::sync::Mutex;
 const MAX_PLIES: usize = 240;   // a game this long is called a draw
 const SIZE: usize = TYPES * (1 + CELLS);
 
-pub fn starting() -> Weights {
-    let mut v = vec![0.0; SIZE];
-    for (k, x) in [1.0, 3.0, 3.0, 5.0, 9.0].iter().enumerate() { v[k] = *x; }
-    Weights { mid: v.clone(), end: v, xmid: [0.0; EXTRAS], xend: [0.0; EXTRAS] }
-}
+pub fn starting() -> Weights { Weights::starting() }
 
 // How each kind of piece gains from being further up and nearer the middle (see tune), in each phase
 #[derive(Clone)]

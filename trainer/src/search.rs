@@ -19,6 +19,12 @@ pub const TYPES: usize = 6;
 #[derive(Clone)]
 pub struct Weights { pub mid: Vec<f64>, pub end: Vec<f64>, pub xmid: [f64; EXTRAS], pub xend: [f64; EXTRAS] }
 impl Weights {
+    // The untrained weights: the usual piece values, nothing else
+    pub fn starting() -> Weights {
+        let mut v = vec![0.0; TYPES * (1 + CELLS)];
+        for (k, x) in [1.0, 3.0, 3.0, 5.0, 9.0].iter().enumerate() { v[k] = *x; }
+        Weights { mid: v.clone(), end: v, xmid: [0.0; EXTRAS], xend: [0.0; EXTRAS] }
+    }
     fn has_extras(&self) -> bool { self.xmid.iter().chain(self.xend.iter()).any(|&x| x != 0.0) }
 }
 
@@ -75,6 +81,7 @@ pub struct Searcher<'a> {
     stamp: u32,
     nodes: u64,
     limit: u64,
+    clock: Option<(fn() -> f64, f64)>,   // in the browser: a clock (milliseconds) and when to stop by it
     stopped: bool,
     killers: [[u16; 2]; MAX_PLY],
     history: Vec<i32>,     // [from * CELLS + to]
@@ -103,7 +110,7 @@ const VALUE: [i32; 7] = [0, 1, 3, 3, 5, 9, 0];
 impl<'a> Searcher<'a> {
     pub fn new(r: &'a Rules, w: Weights) -> Searcher<'a> {
         Searcher {
-            r, w, table: vec![Entry::default(); 1 << TABLE_BITS], stamp: 0, nodes: 0, limit: 0, stopped: false,
+            r, w, table: vec![Entry::default(); 1 << TABLE_BITS], stamp: 0, nodes: 0, limit: 0, clock: None, stopped: false,
             killers: [[u16::MAX; 2]; MAX_PLY], history: vec![0; CELLS * CELLS], path: Vec::new(),
             moves: (0..MAX_PLY + 8).map(|_| Vec::with_capacity(128)).collect(), scratch: Vec::with_capacity(128),
             seen: Seen::default(),
@@ -123,6 +130,7 @@ impl<'a> Searcher<'a> {
     fn tick(&mut self) -> bool {
         self.nodes += 1;
         if self.nodes >= self.limit { self.stopped = true; }
+        if self.nodes & 1023 == 0 { if let Some((now, deadline)) = self.clock { if now() >= deadline { self.stopped = true; } } }
         self.stopped
     }
 
@@ -215,6 +223,14 @@ impl<'a> Searcher<'a> {
         let flag = if best <= start { -1 } else if best >= beta { 1 } else { 0 };
         self.table[slot] = Entry { key: p.hash, stamp: self.stamp, depth: depth as i8, flag, score: best as f32, best: best_move };
         best
+    }
+
+    // A move in about `ms` milliseconds by the clock `now` (in the browser, where bot.js would use its time)
+    pub fn choose_timed(&mut self, root: &Pos, ms: f64, now: fn() -> f64) -> Choice {
+        self.clock = Some((now, now() + ms));
+        let c = self.choose(root, u64::MAX);
+        self.clock = None;
+        c
     }
 
     // A move for the side to move in `root`, looking at about `limit` positions
