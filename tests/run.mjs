@@ -641,6 +641,13 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   // The test browsers can't double-tap to zoom, so this checks the setting that stops it on phones
   const zoom = await page.evaluate(() => [getComputedStyle(document.documentElement).touchAction, getComputedStyle(document.getElementById('hexboard')).touchAction]);
   check(who, zoom[0] === 'manipulation' && zoom[1] === 'none', 'no double-tap zoom on the page, nor on the board', zoom.join(', '));
+  // iPhones zoomed anyway: the board must cancel each touch's end, which is what stops it there
+  if (touch) {
+    await page.evaluate(() => document.addEventListener('touchend', e => { window.touchEndCancelled = e.defaultPrevented; }, { once: true }));
+    await hexTap(page, 'f6', touch);   // an empty cell: nothing happens
+    const cancelled = await page.evaluate(() => window.touchEndCancelled);
+    check(who, cancelled === true, 'a tap on the board cancels the touch’s end, so iPhones don’t zoom', String(cancelled));
+  }
   check(who, (await page.locator('.hex-pieces piece').count()) === 36, 'and 36 pieces');
   check(who, (await status(page)) === 'White to move.', 'White moves first', await status(page));
   const over = await page.evaluate(() => document.documentElement.scrollWidth - innerWidth);

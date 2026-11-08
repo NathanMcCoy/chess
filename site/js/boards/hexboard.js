@@ -155,6 +155,10 @@ export function hexBoard(root, { geometry, onMove }) {
   };
   root.addEventListener('pointerup', end);
   root.addEventListener('pointercancel', e => { if (drag && e.pointerId === drag.id) { drag = null; draw(); } });
+  // An iPhone still zoomed in on a quick second tap with the page's touch-action: manipulation (the
+  // user's, Nov 7). Cancelling the pointer events doesn't stop it; cancelling the touch's end does.
+  // Taps still work: they're read from the pointer events above, which come first.
+  root.addEventListener('touchend', e => e.preventDefault(), { passive: false });
 
   layout();
   draw();
