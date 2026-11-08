@@ -62,13 +62,23 @@ export function evaluate(e, pos, w) {
   return score;
 }
 
-// Is this a weights file the bot can use for this variant's engine?
-export function usable(w, e) {
+// A weights file made ready for this variant's engine, or null if it can't be used. Its extras are
+// matched to the engine's by name, so a file made before an extra was added still loads (the new
+// one worth nothing until it's learned), and a version 1 file gets an endgame the same as its middle.
+export function prepare(w, e) {
   const n = size(e.cells);
-  return !!w && Array.isArray(w.values) && w.values.length === n
-    && (w.endgame === undefined || (Array.isArray(w.endgame) && w.endgame.length === n))
-    && (w.extras === undefined || (Array.isArray(w.extras.middle) && w.extras.middle.length === (e.extraNames || []).length
-      && Array.isArray(w.extras.end) && w.extras.end.length === w.extras.middle.length));
+  if (!w || !Array.isArray(w.values) || w.values.length !== n) return null;
+  if (w.endgame !== undefined && !(Array.isArray(w.endgame) && w.endgame.length === n)) return null;
+  const names = e.extraNames || [];
+  const middle = names.map(() => 0), end = names.map(() => 0);
+  const ex = w.extras;
+  if (ex !== undefined) {
+    const ok = ex && Array.isArray(ex.names) && Array.isArray(ex.middle) && Array.isArray(ex.end)
+      && ex.middle.length === ex.names.length && ex.end.length === ex.names.length;
+    if (!ok) return null;
+    names.forEach((name, k) => { const at = ex.names.indexOf(name); if (at >= 0) { middle[k] = ex.middle[at]; end[k] = ex.end[at]; } });
+  }
+  return { ...w, endgame: w.endgame || [...w.values], extras: { names: [...names], middle, end } };
 }
 
 // --- The search ---------------------------------------------------------------------------------

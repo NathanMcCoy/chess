@@ -28,6 +28,7 @@ pub struct Geometry {
     pub r: [i32; CELLS],
     pub file: [u8; CELLS],      // 0..10
     pub rank: [u8; CELLS],      // 1..11
+    pub colour: [u8; CELLS],    // 0..2, as hex.js: a bishop keeps to one
     pub file_len: [u8; 11],
     pub index: [[i16; 11]; 11], // [q+5][r+5] -> cell, or -1
     pub mirror: [u8; CELLS],
@@ -50,8 +51,9 @@ pub struct Geometry {
 }
 
 // What the bot judges besides where each piece stands, in the order of hex.js's EXTRAS
-pub const EXTRAS: usize = 9;
-pub const EXTRA_NAMES: [&str; EXTRAS] = ["mobility N", "mobility B", "mobility R", "mobility Q", "mobility K", "passed pawns", "passed pawns, how far up", "pawns by the king", "pieces near the enemy king"];
+pub const EXTRAS: usize = 15;
+pub const EXTRA_NAMES: [&str; EXTRAS] = ["mobility N", "mobility B", "mobility R", "mobility Q", "mobility K", "passed pawns", "passed pawns, how far up", "pawns by the king", "pieces near the enemy king",
+    "doubled pawns", "isolated pawns", "protected pawns", "pieces attacked by pawns", "bishop colours", "rooks on files without own pawns"];
 
 const EDGES: [(i32, i32); 6] = [(0, -1), (1, -1), (1, 0), (0, 1), (-1, 1), (-1, 0)];
 const CORNERS: [(i32, i32); 6] = [(1, -2), (2, -1), (1, 1), (-1, 2), (-2, 1), (-1, -1)];
@@ -62,7 +64,7 @@ const CAPTURES: [[(i32, i32); 2]; 2] = [[(-1, 0), (1, -1)], [(1, 0), (-1, 1)]];
 impl Geometry {
     pub fn new() -> Geometry {
         let mut g = Geometry {
-            q: [0; CELLS], r: [0; CELLS], file: [0; CELLS], rank: [0; CELLS], file_len: [0; 11],
+            q: [0; CELLS], r: [0; CELLS], file: [0; CELLS], rank: [0; CELLS], colour: [0; CELLS], file_len: [0; 11],
             index: [[-1; 11]; 11], mirror: [0; CELLS], info: [[0.0; 2]; CELLS],
             edges: [[-1; CELLS]; 6], corners: [[-1; CELLS]; 6], knight: [[-1; CELLS]; 12],
             pawn_forward: [[-1; CELLS]; 2], pawn_back: [[-1; CELLS]; 2],
@@ -79,6 +81,7 @@ impl Geometry {
                 g.q[n] = q; g.r[n] = r;
                 g.file[n] = (q + RADIUS) as u8;
                 g.rank[n] = (bottom - r + 1) as u8;
+                g.colour[n] = (q - r).rem_euclid(3) as u8;
                 g.index[(q + 5) as usize][(r + 5) as usize] = n as i16;
                 n += 1;
                 r -= 1;
@@ -459,6 +462,7 @@ impl Rules {
         let mut mob = [[0i32; 5]; 2];
         let mut passed = [0i32; 2];
         let mut far = [0f64; 2];
+        let mut files = [[0i32; 11]; 2];   // each side's pawns on each file
         for i in 0..CELLS {
             let pc = b[i];
             if pc == 0 { continue; }
@@ -471,6 +475,7 @@ impl Rules {
                 QUEEN => mob[s][3] += reach(i, c, &g.edges, true) + reach(i, c, &g.corners, true),
                 KING => mob[s][4] += reach(i, c, &g.edges, false) + reach(i, c, &g.corners, false),
                 _ => {
+                    files[s][g.file[i] as usize] += 1;
                     let enemy_pawn = PAWN | ((c ^ 1) << 3);
                     if !g.front[s][i].iter().any(|&j| b[j as usize] == enemy_pawn) {
                         passed[s] += 1;
@@ -479,6 +484,36 @@ impl Rules {
                 }
             }
         }
+        // Pawn structure, pawns' threats, bishops and rooks (needs each side's pawns on each file first)
+        let pawn_takes = |i: usize, c: u8| -> bool {   // could a pawn of side c take on cell i?
+            let pawn = PAWN | (c << 3);
+            (0..2).any(|k| { let j = g.pawn_from[c as usize][k][i]; j >= 0 && b[j as usize] == pawn })
+        };
+        let (mut isolated, mut defended, mut threatened, mut open_rooks) = ([0i32; 2], [0i32; 2], [0i32; 2], [0i32; 2]);
+        let mut colours = [[false; 3]; 2];
+        for i in 0..CELLS {
+            let pc = b[i];
+            if pc == 0 { continue; }
+            let c = side(pc);
+            let s = c as usize;
+            let f = g.file[i] as usize;
+            match kind(pc) {
+                PAWN => {
+                    let left = f > 0 && files[s][f - 1] > 0;
+                    let right = f < 10 && files[s][f + 1] > 0;
+                    if !left && !right { isolated[s] += 1; }
+                    if pawn_takes(i, c) { defended[s] += 1; }
+                }
+                KING => {}
+                k => {
+                    if pawn_takes(i, c ^ 1) { threatened[s] += 1; }
+                    if k == ROOK && files[s][f] == 0 { open_rooks[s] += 1; }
+                    if k == BISHOP { colours[s][g.colour[i] as usize] = true; }
+                }
+            }
+        }
+        let doubled = |s: usize| -> i32 { files[s].iter().map(|&n| (n - 1).max(0)).sum() };
+        let colour_count = |s: usize| -> i32 { colours[s].iter().filter(|&&x| x).count() as i32 };
         let shield = |c: u8| -> i32 {
             let k = p.kings[c as usize];
             if k < 0 { return 0; }
@@ -496,6 +531,12 @@ impl Rules {
         x[6] = far[0] - far[1];
         x[7] = (shield(0) - shield(1)) as f64;
         x[8] = (near(1) - near(0)) as f64;
+        x[9] = (doubled(0) - doubled(1)) as f64;
+        x[10] = (isolated[0] - isolated[1]) as f64;
+        x[11] = (defended[0] - defended[1]) as f64;
+        x[12] = (threatened[0] - threatened[1]) as f64;
+        x[13] = (colour_count(0) - colour_count(1)) as f64;
+        x[14] = (open_rooks[0] - open_rooks[1]) as f64;
         x
     }
 

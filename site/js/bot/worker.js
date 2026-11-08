@@ -3,14 +3,14 @@
 // { id, move, score, depth } or { id, error }. It uses the trained weights in /data/bot/<variant>.json,
 // or the untrained ones if they can't be loaded.
 import { variant } from '../variants/index.js';
-import { chooseMove, startingWeights, usable } from './bot.js';
+import { chooseMove, startingWeights, prepare } from './bot.js';
 
 const loaded = {};
 function weightsFor(v) {
   loaded[v.id] ??= fetch(`/data/bot/${v.id}.json`)
     .then(r => (r.ok ? r.json() : null))
     .catch(() => null)
-    .then(w => (usable(w, v.engine) ? w : startingWeights(v.id, v.engine.cells, v.engine.extraNames)));
+    .then(w => prepare(w, v.engine) || startingWeights(v.id, v.engine.cells, v.engine.extraNames));
   return loaded[v.id];
 }
 

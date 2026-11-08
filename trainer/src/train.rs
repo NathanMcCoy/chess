@@ -47,8 +47,16 @@ pub fn load(path: &str) -> (Value, Weights, Shape) {
     let mid = numbers(&file["values"]).expect("no values");
     assert_eq!(mid.len(), SIZE, "values for {CELLS} cells expected");
     let end = numbers(&file["endgame"]).filter(|e| e.len() == SIZE).unwrap_or_else(|| mid.clone());
-    let extra = |name: &str| -> [f64; EXTRAS] {
-        numbers(&file["extras"][name]).filter(|a| a.len() == EXTRAS).map(|a| a.try_into().unwrap()).unwrap_or([0.0; EXTRAS])
+    // Matched by name (as bot.js's prepare()): a file made before an extra was added still loads, the
+    // new one worth nothing
+    let names: Vec<String> = file["extras"]["names"].as_array().map(|a| a.iter().filter_map(|x| x.as_str().map(String::from)).collect()).unwrap_or_default();
+    let extra = |part: &str| -> [f64; EXTRAS] {
+        let values = numbers(&file["extras"][part]).unwrap_or_default();
+        let mut out = [0.0; EXTRAS];
+        for (k, name) in EXTRA_NAMES.iter().enumerate() {
+            if let Some(at) = names.iter().position(|n| n == name) { out[k] = values.get(at).copied().unwrap_or(0.0); }
+        }
+        out
     };
     let s = &file["shape"];
     let am = six(numbers(&s["advance"])).unwrap_or([0.0; TYPES]);
@@ -240,7 +248,9 @@ pub fn train(r: &Rules, args: &[String]) {
         println!("    middle game: values {}; further up {}; middle {}", show(&lw.mid), show(&learned.shape.adv[0]), show(&learned.shape.cen[0]));
         println!("    endgame:     values {}; further up {}; middle {}", show(&lw.end), show(&learned.shape.adv[1]), show(&learned.shape.cen[1]));
         let ex = |a: &[f64; EXTRAS]| a.iter().map(|x| format!("{x:.3}")).collect::<Vec<_>>().join(" ");
-        println!("    extras (mobility N B R Q K, passed, passed far, pawns by king, near enemy king): middle {} / end {}", ex(&lw.xmid), ex(&lw.xend));
+        println!("    extras (mobility N B R Q K, passed, passed far, pawns by king, near enemy king, doubled, isolated, protected, attacked by pawns, bishop colours, open rooks):");
+        println!("      middle {}", ex(&lw.xmid));
+        println!("      end    {}", ex(&lw.xend));
 
         // 3. Proof
         let t2 = std::time::Instant::now();

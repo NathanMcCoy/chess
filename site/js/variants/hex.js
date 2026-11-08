@@ -266,7 +266,15 @@ const CELL_INFO = CELLS.map((c, i) => [(HIGH - HEIGHT[i]) / (HIGH - LOW), 1 - Ma
 //     one could block or take them); and the same pawns, each counted by how far up it is (0 to 1)
 //   pawns by the king: a side's own pawns on the six cells next to its king (through the sides)
 //   pieces near the enemy king: knights, bishops, rooks and queens within two steps of it
-const EXTRAS = ['mobility N', 'mobility B', 'mobility R', 'mobility Q', 'mobility K', 'passed pawns', 'passed pawns, how far up', 'pawns by the king', 'pieces near the enemy king'];
+//   doubled pawns: a side's pawns beyond the first on each file
+//   isolated pawns: pawns with none of their side's pawns on the files either side
+//   protected pawns: pawns one of their side's pawns could take back on (it defends them)
+//   pieces attacked by pawns: knights, bishops, rooks and queens an enemy pawn could take
+//   bishop colours: how many of the three cell colours a side's bishops are on (each bishop keeps
+//     to one colour, so a lost bishop leaves a third of the board out of their reach)
+//   rooks on files without own pawns: rooks on a file where their side has no pawn
+const EXTRAS = ['mobility N', 'mobility B', 'mobility R', 'mobility Q', 'mobility K', 'passed pawns', 'passed pawns, how far up', 'pawns by the king', 'pieces near the enemy king',
+  'doubled pawns', 'isolated pawns', 'protected pawns', 'pieces attacked by pawns', 'bishop colours', 'rooks on files without own pawns'];
 const hexDistance = (i, j) => { const dq = CELLS[j].q - CELLS[i].q, dr = CELLS[j].r - CELLS[i].r; return Math.max(Math.abs(dq), Math.abs(dr), Math.abs(dq + dr)); };
 const NEAR = CELLS.map((_, i) => CELLS.map((_, j) => j).filter(j => j !== i && hexDistance(i, j) <= 2));
 // For a pawn of each side on each cell, the cells an enemy pawn would have to be on to stop it
@@ -294,6 +302,7 @@ function extras(s) {
   };
   const mob = { w: [0, 0, 0, 0, 0], b: [0, 0, 0, 0, 0] };
   const passed = { w: 0, b: 0 }, far = { w: 0, b: 0 };
+  const files = { w: new Array(FILES.length).fill(0), b: new Array(FILES.length).fill(0) };   // each side's pawns on each file
   for (let i = 0; i < CELLS.length; i++) {
     const p = b[i];
     if (!p) continue;
@@ -303,17 +312,40 @@ function extras(s) {
     else if (t === 'R') mob[c][2] += reach(i, c, EDGES, true);
     else if (t === 'Q') mob[c][3] += reach(i, c, EDGES, true) + reach(i, c, CORNERS, true);
     else if (t === 'K') mob[c][4] += reach(i, c, EDGES, false) + reach(i, c, CORNERS, false);
-    else if (!FRONT[c][i].some(j => b[j] === (c === 'w' ? 'p' : 'P'))) {
-      passed[c]++;
-      far[c] += CELL_INFO[c === 'w' ? i : MIRROR[i]][0];
+    else {
+      files[c][CELLS[i].q + RADIUS]++;
+      if (!FRONT[c][i].some(j => b[j] === (c === 'w' ? 'p' : 'P'))) {
+        passed[c]++;
+        far[c] += CELL_INFO[c === 'w' ? i : MIRROR[i]][0];
+      }
     }
   }
+  // Pawn structure, pawns' threats, bishops and rooks (needs each side's pawns on each file first)
+  const pawnOf = c => (c === 'w' ? 'P' : 'p');
+  const pawnTakes = (i, c) => PAWN[c].from.some(d => { const j = step(i, d); return j >= 0 && b[j] === pawnOf(c); });   // could a pawn of c take on i?
+  const isolated = { w: 0, b: 0 }, defended = { w: 0, b: 0 }, threatened = { w: 0, b: 0 }, openRooks = { w: 0, b: 0 };
+  const colours = { w: new Set(), b: new Set() };
+  for (let i = 0; i < CELLS.length; i++) {
+    const p = b[i];
+    if (!p) continue;
+    const c = colourOf(p), t = typeOf(p), f = CELLS[i].q + RADIUS;
+    if (t === 'P') {
+      if (!(files[c][f - 1] > 0) && !(files[c][f + 1] > 0)) isolated[c]++;
+      if (pawnTakes(i, c)) defended[c]++;
+    } else if (t !== 'K') {
+      if (pawnTakes(i, other(c))) threatened[c]++;
+      if (t === 'R' && files[c][f] === 0) openRooks[c]++;
+      if (t === 'B') colours[c].add(CELLS[i].colour);
+    }
+  }
+  const doubled = c => files[c].reduce((n, k) => n + Math.max(0, k - 1), 0);
   const shield = c => { const k = kingOf(b, c); return k < 0 ? 0 : EDGES.filter(d => { const j = step(k, d); return j >= 0 && b[j] === (c === 'w' ? 'P' : 'p'); }).length; };
   const near = c => {   // the enemy's pieces near side c's king
     const k = kingOf(b, c);
     return k < 0 ? 0 : NEAR[k].filter(j => b[j] && colourOf(b[j]) !== c && 'NBRQ'.includes(typeOf(b[j]))).length;
   };
-  return [...mob.w.map((x, k) => x - mob.b[k]), passed.w - passed.b, far.w - far.b, shield('w') - shield('b'), near('b') - near('w')];
+  return [...mob.w.map((x, k) => x - mob.b[k]), passed.w - passed.b, far.w - far.b, shield('w') - shield('b'), near('b') - near('w'),
+    doubled('w') - doubled('b'), isolated.w - isolated.b, defended.w - defended.b, threatened.w - threatened.b, colours.w.size - colours.b.size, openRooks.w - openRooks.b];
 }
 
 const engine = {

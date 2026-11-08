@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import hex from '../site/js/variants/hex.js';
 import chess from '../site/js/variants/chess.js';
-import { chooseMove, evaluate, startingWeights, size, usable, TYPES } from '../site/js/bot/bot.js';
+import { chooseMove, evaluate, startingWeights, size, prepare, TYPES } from '../site/js/bot/bot.js';
 
 // A hex position from { cell: piece } (uppercase White), as in hex.test.mjs
 const { files, cells } = hex.geometry;
@@ -86,8 +86,8 @@ for (const v of [hex, chess]) {
 
   test(`${v.id}: a version 1 weights file (no endgame, no extras) judges as before`, () => {
     const w = randomWeights(v);
-    const old = { variant: v.id, cells: e.cells, values: w.values };
-    assert.ok(usable(old, e) && usable(w, e) && !usable({ ...w, values: w.values.slice(1) }, e) && !usable({ ...w, extras: { middle: [1], end: [1] } }, e) === (e.extraNames.length !== 1));
+    const old = prepare({ variant: v.id, cells: e.cells, values: w.values }, e);
+    assert.ok(old && prepare(w, e) && !prepare({ ...w, values: w.values.slice(1) }, e) && !prepare({ ...w, extras: { middle: [1], end: [1] } }, e));
     const pos = e.from(v.replay(v.start(), someGame(v, 15)).states.at(-1));
     let sum = 0;   // the version 1 sum: a piece's value and its value on its cell, White's less Black's
     for (const [t, i, c] of e.pieces(pos)) {
@@ -127,6 +127,33 @@ test('hex: the extras, worked out by hand for one position', () => {
   assert.equal(x['pawns by the king'], 2);           // f2 and g2 both touch g1 through a side: (-1, 0) and (0, -1)
   assert.equal(x['pieces near the enemy king'], 1);  // White's rook e9 is two steps from Black's king f11
   assert.equal(e.phase(pos), 3 / 26);                // a knight (1) and a rook (2) left, of 26 at the start
+});
+
+test('hex: pawn structure, pawn threats, bishop colours and rooks, worked out by hand', () => {
+  const e = hex.engine;
+  const extra = (pieces, name) => e.extras(e.from(hexPosition({ g1: 'K', f11: 'k', ...pieces })))[e.extraNames.indexOf(name)];
+  // The cell a White pawn on f5 takes on, through its (1, -1) capture: worked out from the geometry
+  const at = (q, r) => cells.find(c => c.q === q && c.r === r).name;
+  const f5 = cells.find(c => c.name === 'f5');
+  const takes = at(f5.q + 1, f5.r - 1);
+  assert.equal(extra({ c2: 'P', c4: 'P' }, 'doubled pawns'), 1);              // two on the c-file
+  assert.equal(extra({ c2: 'P', c4: 'P' }, 'isolated pawns'), 2);             // nothing on b or d
+  assert.equal(extra({ f5: 'P', [takes]: 'P' }, 'protected pawns'), 1);      // f5 defends the pawn it could take back on
+  assert.equal(extra({ f5: 'P', [takes]: 'P' }, 'isolated pawns'), 0);       // f and g are next to each other
+  assert.equal(extra({ f5: 'P', [takes]: 'n' }, 'pieces attacked by pawns'), -1);   // Black's knight is attacked
+  assert.equal(extra({ f1: 'B', f2: 'B', f3: 'B', f9: 'b', f10: 'b' }, 'bishop colours'), 3 - 2);
+  assert.equal(extra({ c1: 'R', a1: 'r', a3: 'p' }, 'rooks on files without own pawns'), 1);   // Black's rook has its pawn
+});
+
+test('weights made before an extra was added still load: matched by name, the new one worth nothing', () => {
+  const e = hex.engine;
+  const w = startingWeights('hex', e.cells, ['mobility N', 'passed pawns']);
+  w.extras.middle = [0.5, 0.25]; w.extras.end = [1, 2];
+  const p = prepare(w, e);
+  assert.deepEqual(p.extras.names, e.extraNames);
+  assert.equal(p.extras.middle[e.extraNames.indexOf('passed pawns')], 0.25);
+  assert.equal(p.extras.end[e.extraNames.indexOf('mobility N')], 1);
+  assert.equal(p.extras.middle[e.extraNames.indexOf('doubled pawns')], 0);
 });
 
 test('hex: no move once the game is over', () => {
