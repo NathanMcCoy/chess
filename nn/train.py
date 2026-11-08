@@ -10,7 +10,7 @@ which trainer/src/nn.rs computes the same way (tests/nn.test.mjs checks they agr
     = 1092 inputs that are 1 or 0
   layer 1: the same weights for both points of view, to --acc numbers each (128); the side to move's first,
     then the other's; each held between 0 and 1
-  layers 2 and 3: 32 numbers each, held between 0 and 1; then one number, the score in pawns for the
+  layers 2 and 3: --hidden numbers each (32), held between 0 and 1; then one number, the score in pawns for the
     side to move (the scale the search already uses)
 Trained so that sigmoid(K * output) matches sigmoid(K * search score) (and --lambda parts the game's
 result), K being how scores turn into chances of winning.
@@ -71,12 +71,12 @@ class Net(torch.nn.Module):
     other's, halved (as Stockfish's NNUE has its "PSQT" part). It starts as the bot's trained tables
     (--start), so material always counts, and the layers learn only what the tables miss: without
     it, the first network valued a queen at 6.25 pawns and played no better than the untrained bot."""
-    def __init__(self, start=None, acc=128):
+    def __init__(self, start=None, acc=128, hidden=32):
         super().__init__()
         self.l1 = torch.nn.Linear(INPUTS, acc)
-        self.l2 = torch.nn.Linear(2 * acc, 32)
-        self.l3 = torch.nn.Linear(32, 32)
-        self.l4 = torch.nn.Linear(32, 1)
+        self.l2 = torch.nn.Linear(2 * acc, hidden)
+        self.l3 = torch.nn.Linear(hidden, hidden)
+        self.l4 = torch.nn.Linear(hidden, 1)
         self.psqt = torch.nn.Linear(INPUTS, 1, bias=False)
         with torch.no_grad():
             self.psqt.weight.copy_(torch.as_tensor(start if start is not None else np.zeros(INPUTS), dtype=torch.float32).unsqueeze(0))
@@ -115,6 +115,7 @@ def main():
     ap.add_argument('--k', type=float, default=0.6, help='how a score in pawns turns into a chance of winning')
     ap.add_argument('--seed', type=int, default=1)
     ap.add_argument('--acc', type=int, default=128, help="layer 1's numbers for each point of view")
+    ap.add_argument('--hidden', type=int, default=32, help='layers 2 and 3: how many numbers each')
     ap.add_argument('--start', default='site/data/bot/hex.json', help='weights to start the shortcut from ("none": nothing)')
     a = ap.parse_args()
     torch.manual_seed(a.seed)
@@ -134,7 +135,7 @@ def main():
         r = torch.as_tensor(d['result'], device=dev)
         return a.lam * r + (1 - a.lam) * torch.sigmoid(a.k * s)
 
-    net = Net(None if a.start == 'none' else tables(a.start), a.acc).to(dev)
+    net = Net(None if a.start == 'none' else tables(a.start), a.acc, a.hidden).to(dev)
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
 
@@ -164,7 +165,7 @@ def main():
     w = {name: p.detach().cpu().numpy() for name, p in net.state_dict().items()}
     out = {
         'about': 'The bot\'s neural network for hex: see nn/train.py. Layer weights are [outputs][inputs].',
-        'inputs': INPUTS, 'acc': a.acc, 'k': a.k, 'lambda': a.lam, 'positions': len(train),
+        'inputs': INPUTS, 'acc': a.acc, 'hidden': a.hidden, 'k': a.k, 'lambda': a.lam, 'positions': len(train),
         'l1': {'w': w['l1.weight'].T.ravel().tolist(), 'b': w['l1.bias'].tolist()},   # l1 as [input][acc]: a piece adds its row
         'l2': {'w': w['l2.weight'].ravel().tolist(), 'b': w['l2.bias'].tolist()},
         'l3': {'w': w['l3.weight'].ravel().tolist(), 'b': w['l3.bias'].tolist()},

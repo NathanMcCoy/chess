@@ -229,7 +229,8 @@ pub fn vs_felipe(r: &Rules, args: &[String]) {
 pub fn load_net(path: &str) -> Arc<Net> {
     let v: Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap_or_else(|e| panic!("can't read {path}: {e}"))).expect("not JSON");
     let acc = v["acc"].as_u64().expect("no acc") as usize;
-    let mut x: Vec<f32> = Vec::with_capacity(Net::numbers(acc));
+    let h = v["hidden"].as_u64().unwrap_or(32) as usize;   // layers 2 and 3 (32 before it was in the file)
+    let mut x: Vec<f32> = Vec::with_capacity(Net::numbers(acc, h));
     for layer in ["l1", "l2", "l3", "l4"] {
         for part in ["w", "b"] {
             x.extend(v[layer][part].as_array().expect("missing weights").iter().map(|n| n.as_f64().unwrap() as f32));
@@ -240,7 +241,7 @@ pub fn load_net(path: &str) -> Arc<Net> {
         Some(a) => x.extend(a.iter().map(|n| n.as_f64().unwrap() as f32)),
         None => x.extend(std::iter::repeat_n(0.0f32, engine::nn::INPUTS)),
     }
-    Arc::new(Net::from_numbers(acc, &x).expect("the network's numbers don't add up"))
+    Arc::new(Net::from_numbers(acc, h, &x).expect("the network's numbers don't add up"))
 }
 
 // net-match --net N.json --vs (A.json | start | felipe:<depth>): our bot judging by the network
@@ -254,10 +255,13 @@ pub fn net_match(r: &Rules, args: &[String]) {
     let nodes_b: u64 = num(args, "nodes-b", nodes);
     let games: usize = num(args, "match", 400);
     let mut rng = Rng::new(num(args, "seed", 12345));
-    let nets = [load_net(net_file)];
-    let (weights, other) = match vs.strip_prefix("felipe:") {
-        Some(d) => (vec![starting()], Player::Felipe(d.parse().expect("felipe:<depth>"))),
-        None => (vec![load(vs).1], Player::Bot(0, nodes_b)),
+    // --vs-net B.json: against another network instead (the loop: a new network against the best)
+    let vs_net = arg(args, "vs-net");
+    let nets: Vec<Arc<Net>> = std::iter::once(net_file).chain(vs_net).map(load_net).collect();
+    let (weights, other, vs) = match (vs_net, vs.strip_prefix("felipe:")) {
+        (Some(b), _) => (vec![starting()], Player::Net(1, nodes_b), b),
+        (None, Some(d)) => (vec![starting()], Player::Felipe(d.parse().expect("felipe:<depth>")), vs),
+        (None, None) => (vec![load(vs).1], Player::Bot(0, nodes_b), vs),
     };
     let t = std::time::Instant::now();
     let m = play_between(r, &weights, &nets, Player::Net(0, nodes), other, games, threads_of(args), &mut rng);

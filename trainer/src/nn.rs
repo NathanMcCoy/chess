@@ -4,16 +4,16 @@
 //
 // The weights come as one list of numbers, in this order (nn/train.py writes them as JSON, and the
 // trainer reads that): layer 1 [input][ACC] (a piece adds its input's row), its biases [ACC];
-// layer 2 [32][2 ACC], [32]; layer 3 [32][32], [32]; layer 4 [32], [1]; then the shortcut's value
-// for each input [INPUTS] (added up for each point of view; the side to move's less the other's,
-// halved, goes straight to the output: see nn/train.py).
-// Each position's first layer is worked out afresh (not kept up as pieces move): simpler, slower.
+// layer 2 [H][2 ACC], [H]; layer 3 [H][H], [H]; layer 4 [H], [1]; then the shortcut's value for
+// each input [INPUTS] (added up for each point of view; the side to move's less the other's,
+// halved, goes straight to the output: see nn/train.py). ACC and H are in the network's file.
+// The search keeps the first layer up move by move (Acc); evaluate() works it out afresh.
 use crate::hex::*;
 
 pub const KINDS: usize = 6;
 pub const INPUTS: usize = 2 * KINDS * CELLS;
-const H: usize = 32;
 pub const MAX_ACC: usize = 256;   // the largest first layer (each point of view) this works with
+pub const MAX_H: usize = 32;      // and the largest layers 2 and 3
 
 // The first layer's numbers for both points of view (White's, Black's), and the shortcut's totals:
 // the search keeps one for each step of the line it's looking at, and changes it only by what each
@@ -22,25 +22,25 @@ pub const MAX_ACC: usize = 256;   // the largest first layer (each point of view
 pub struct Acc { pub v: [[f32; MAX_ACC]; 2], pub short: [f32; 2] }
 impl Default for Acc { fn default() -> Self { Acc { v: [[0.0; MAX_ACC]; 2], short: [0.0; 2] } } }
 
-pub struct Net { acc: usize, l1w: Vec<f32>, l1b: Vec<f32>, l2w: Vec<f32>, l2b: Vec<f32>, l3w: Vec<f32>, l3b: Vec<f32>, l4w: Vec<f32>, l4b: f32, psqt: Vec<f32> }
+pub struct Net { acc: usize, h: usize, l1w: Vec<f32>, l1b: Vec<f32>, l2w: Vec<f32>, l2b: Vec<f32>, l3w: Vec<f32>, l3b: Vec<f32>, l4w: Vec<f32>, l4b: f32, psqt: Vec<f32> }
 
 impl Net {
-    pub fn numbers(acc: usize) -> usize { INPUTS * acc + acc + H * 2 * acc + H + H * H + H + H + 1 + INPUTS }
+    pub fn numbers(acc: usize, h: usize) -> usize { INPUTS * acc + acc + h * 2 * acc + h + h * h + h + h + 1 + INPUTS }
 
-    pub fn from_numbers(acc: usize, x: &[f32]) -> Option<Net> {
-        if acc > MAX_ACC || x.len() != Self::numbers(acc) { return None; }
+    pub fn from_numbers(acc: usize, h: usize, x: &[f32]) -> Option<Net> {
+        if acc > MAX_ACC || h > MAX_H || x.len() != Self::numbers(acc, h) { return None; }
         let mut at = 0;
         let mut take = |n: usize| { let s = x[at..at + n].to_vec(); at += n; s };
         let l1w = take(INPUTS * acc);
         let l1b = take(acc);
-        let l2w = take(H * 2 * acc);
-        let l2b = take(H);
-        let l3w = take(H * H);
-        let l3b = take(H);
-        let l4w = take(H);
+        let l2w = take(h * 2 * acc);
+        let l2b = take(h);
+        let l3w = take(h * h);
+        let l3b = take(h);
+        let l4w = take(h);
         let l4b = take(1)[0];
         let psqt = take(INPUTS);
-        Some(Net { acc, l1w, l1b, l2w, l2b, l3w, l3b, l4w, l4b, psqt })
+        Some(Net { acc, h, l1w, l1b, l2w, l2b, l3w, l3b, l4w, l4b, psqt })
     }
 
     // How good the position is for the side to move, in pawns (the first layer worked out afresh)
@@ -105,13 +105,14 @@ impl Net {
         let mut x = [0f32; 2 * MAX_ACC];
         for (k, v) in mine.iter().chain(other.iter()).enumerate() { x[k] = v.clamp(0.0, 1.0); }
         let x = &x[..2 * a];
-        let layer = |w: &[f32], b: &[f32], x: &[f32], out: &mut [f32; H]| {
-            for j in 0..H { out[j] = (b[j] + dot(&w[j * x.len()..][..x.len()], x)).clamp(0.0, 1.0); }
+        let h = self.h;
+        let layer = |w: &[f32], b: &[f32], x: &[f32], out: &mut [f32]| {
+            for j in 0..h { out[j] = (b[j] + dot(&w[j * x.len()..][..x.len()], x)).clamp(0.0, 1.0); }
         };
-        let (mut h1, mut h2) = ([0f32; H], [0f32; H]);
-        layer(&self.l2w, &self.l2b, x, &mut h1);
-        layer(&self.l3w, &self.l3b, &h1, &mut h2);
-        self.l4b + dot(&self.l4w, &h2) + shortcut
+        let (mut h1, mut h2) = ([0f32; MAX_H], [0f32; MAX_H]);
+        layer(&self.l2w, &self.l2b, x, &mut h1[..h]);
+        layer(&self.l3w, &self.l3b, &h1[..h], &mut h2[..h]);
+        self.l4b + dot(&self.l4w, &h2[..h]) + shortcut
     }
 }
 

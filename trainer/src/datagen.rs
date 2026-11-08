@@ -8,7 +8,7 @@
 //   1    the side to move (0 White, 1 Black)
 //   4    the search's score, for the side to move, in pawns (f32, mates as 20)
 //   4    how the game ended, for the side to move: 1, 0.5, 0, or Glinski's 0.75 and 0.25 (f32)
-// Options: --weights (the bot that plays: site/data/bot/hex.json), --random (the chance of a random
+// Options: --weights (the bot that plays: site/data/bot/hex.json), --net (a network judges instead), --random (the chance of a random
 // move instead of the bot's, in the first 20 moves: 0.05, for variety), --threads, --seed.
 use crate::arg;
 use crate::train::{load, Rng};
@@ -78,6 +78,7 @@ pub fn gen_data(r: &Rules, args: &[String]) {
         .unwrap_or_else(|| std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).saturating_sub(2).max(1));
     let out_path = arg(args, "out").expect("--out file");
     let weights = load(arg(args, "weights").unwrap_or("site/data/bot/hex.json")).1;
+    let net = arg(args, "net").map(crate::train::load_net);   // judging by a network instead (the loop: its own games)
     let t = std::time::Instant::now();
     let next = AtomicUsize::new(0);
     let done = AtomicUsize::new(0);
@@ -87,6 +88,7 @@ pub fn gen_data(r: &Rules, args: &[String]) {
         for _ in 0..threads {
             scope.spawn(|| {
                 let mut s = Searcher::new(r, weights.clone());
+                s.set_net(net.clone());
                 let mut buf = Vec::new();
                 loop {
                     let i = next.fetch_add(1, Ordering::Relaxed);
