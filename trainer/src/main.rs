@@ -101,6 +101,34 @@ fn nn_check(rules: &hex::Rules, args: &[String]) {
         worst = worst.max(diff);
     }
     println!("{} positions: the largest difference from PyTorch is {worst:.6} pawns", checks.len());
+
+    // The first layer kept up move by move (as the search does) against worked out afresh from the
+    // board, along random games, with how many captures, en passant and promotions they met
+    let mut rng = train::Rng::new(7);
+    let (mut worst, mut positions, mut captures, mut ep, mut promos) = (0f32, 0, 0, 0, 0);
+    let (mut list, mut scratch) = (Vec::new(), Vec::new());
+    for _ in 0..300 {
+        let mut p = rules.start();
+        let mut acc = engine::nn::Acc::default();
+        net.refresh(rules, &p, &mut acc);
+        for _ in 0..150 {
+            rules.legal(&p, &mut list, &mut scratch);
+            if list.is_empty() { break; }
+            // Captures and pawn moves more often than chance, so the rare cases come up
+            let pick: Vec<_> = list.iter().filter(|m| m.captured != 0 || m.promo != 0 || m.en_passant).cloned().collect();
+            let m = if !pick.is_empty() && rng.next() < 0.5 { pick[rng.below(pick.len())] } else { list[rng.below(list.len())] };
+            let mut next = engine::nn::Acc::default();
+            net.update(rules, &p, &m, &acc, &mut next);
+            if m.captured != 0 { captures += 1; }
+            if m.en_passant { ep += 1; }
+            if m.promo != 0 { promos += 1; }
+            p = rules.play(&p, &m);
+            acc = next;
+            worst = worst.max((net.output(&acc, p.turn) - net.evaluate(rules, &p)).abs());
+            positions += 1;
+        }
+    }
+    println!("{positions} positions along random games ({captures} captures, {ep} en passant, {promos} promotions): kept up move by move against afresh, at most {worst:.6} pawns apart");
 }
 
 fn felipe_check(rules: &hex::Rules, args: &[String]) {

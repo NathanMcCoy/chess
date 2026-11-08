@@ -78,6 +78,7 @@ pub struct Searcher<'a> {
     r: &'a Rules,
     w: Weights,
     net: Option<std::sync::Arc<crate::nn::Net>>,   // when set, it judges positions instead of the weights
+    accs: Vec<crate::nn::Acc>,   // with a network: its first layer at each step of the line being looked at
     table: Vec<Entry>,
     stamp: u32,
     nodes: u64,
@@ -114,14 +115,24 @@ impl<'a> Searcher<'a> {
             r, w, table: vec![Entry::default(); 1 << TABLE_BITS], stamp: 0, nodes: 0, limit: 0, clock: None, net: None, stopped: false,
             killers: [[u16::MAX; 2]; MAX_PLY], history: vec![0; CELLS * CELLS], path: Vec::new(),
             moves: (0..MAX_PLY + 8).map(|_| Vec::with_capacity(128)).collect(), scratch: Vec::with_capacity(128),
-            seen: Seen::default(),
+            seen: Seen::default(), accs: vec![crate::nn::Acc::default(); MAX_PLY + 8],
+        }
+    }
+
+    // Before looking at move m in position p (at step `ply` of the line): the network's first layer
+    // for the position after it, from p's, changed only by what m changes
+    #[inline]
+    fn descend(&mut self, p: &Pos, m: &Move, ply: usize) {
+        if let Some(net) = &self.net {
+            let (lo, hi) = self.accs.split_at_mut(ply + 1);
+            net.update(self.r, p, m, &lo[ply], &mut hi[0]);
         }
     }
     pub fn set_weights(&mut self, w: &Weights) { self.w = w.clone(); }
     pub fn set_net(&mut self, net: Option<std::sync::Arc<crate::nn::Net>>) { self.net = net; }
 
-    fn judge(&self, p: &Pos) -> f64 {
-        if let Some(net) = &self.net { return net.evaluate(self.r, p) as f64; }   // already for the side to move
+    fn judge(&self, p: &Pos, ply: usize) -> f64 {
+        if let Some(net) = &self.net { return net.output(&self.accs[ply], p.turn) as f64; }   // already for the side to move
         let s = evaluate(self.r, p, &self.w);
         if p.turn == 0 { s } else { -s }
     }
@@ -165,11 +176,12 @@ impl<'a> Searcher<'a> {
             // but only the captures are listed in full, the rest only until one legal move is found
             if !self.r.legal_captures(p, &mut list, &mut self.scratch) { break 'out self.terminal(p, ply); }
             if self.r.drawn(p) { break 'out 0.0; }
-            let stand = self.judge(p);
+            let stand = self.judge(p, ply);
             if stand >= beta || ply >= QUIET_PLY { break 'out stand; }   // as bot.js: QUIET_PLY moves from the root
             if stand > alpha { alpha = stand; }
             self.order(p, &mut list, u16::MAX, MAX_PLY);
             for m in list.iter() {
+                self.descend(p, m, ply);
                 let child = self.r.play(p, m);
                 let score = -self.quiet(&child, -beta, -alpha, ply + 1);
                 if self.stopped { break 'out 0.0; }
@@ -208,6 +220,7 @@ impl<'a> Searcher<'a> {
         self.order(p, &mut list, best_code, ply);
         self.path.push(p.hash);
         for m in list.iter() {
+            self.descend(p, m, ply);
             let child = self.r.play(p, m);
             let score = -self.search(&child, depth - 1, -beta, -alpha, ply + 1);
             if self.stopped { break; }
@@ -251,6 +264,7 @@ impl<'a> Searcher<'a> {
         self.r.legal(root, &mut root_moves, &mut self.scratch);
         if root_moves.is_empty() { return Choice { mv: None, score: self.terminal(root, 0), depth: 0, nodes: 0 }; }
         self.order(root, &mut root_moves, u16::MAX, 0);
+        if let Some(net) = &self.net { net.refresh(self.r, root, &mut self.accs[0]); }   // the root's, from every piece
         let mut result = Choice { mv: Some(root_moves[0]), score: 0.0, depth: 0, nodes: 0 };
         for depth in 1..64 {
             let mut alpha = f64::NEG_INFINITY;
@@ -260,6 +274,7 @@ impl<'a> Searcher<'a> {
             self.path.clear();
             self.path.push(root.hash);
             for m in root_moves.clone().iter() {
+                self.descend(root, m, 0);
                 let child = self.r.play(root, m);
                 let score = -self.search(&child, depth - 1, f64::NEG_INFINITY, -alpha, 1);
                 if self.stopped { break; }

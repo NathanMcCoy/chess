@@ -15,6 +15,13 @@ pub const INPUTS: usize = 2 * KINDS * CELLS;
 const H: usize = 32;
 pub const MAX_ACC: usize = 256;   // the largest first layer (each point of view) this works with
 
+// The first layer's numbers for both points of view (White's, Black's), and the shortcut's totals:
+// the search keeps one for each step of the line it's looking at, and changes it only by what each
+// move changes, rather than adding up every piece again in every position
+#[derive(Clone, Copy)]
+pub struct Acc { pub v: [[f32; MAX_ACC]; 2], pub short: [f32; 2] }
+impl Default for Acc { fn default() -> Self { Acc { v: [[0.0; MAX_ACC]; 2], short: [0.0; 2] } } }
+
 pub struct Net { acc: usize, l1w: Vec<f32>, l1b: Vec<f32>, l2w: Vec<f32>, l2b: Vec<f32>, l3w: Vec<f32>, l3b: Vec<f32>, l4w: Vec<f32>, l4b: f32, psqt: Vec<f32> }
 
 impl Net {
@@ -36,33 +43,65 @@ impl Net {
         Some(Net { acc, l1w, l1b, l2w, l2b, l3w, l3b, l4w, l4b, psqt })
     }
 
-    // How good the position is for the side to move, in pawns
+    // How good the position is for the side to move, in pawns (the first layer worked out afresh)
     pub fn evaluate(&self, r: &Rules, p: &Pos) -> f32 {
+        let mut acc = Acc::default();
+        self.refresh(r, p, &mut acc);
+        self.output(&acc, p.turn)
+    }
+
+    // The input a piece on a cell is, from point of view v (0 White's, 1 Black's)
+    #[inline]
+    fn input(r: &Rules, v: usize, pc: u8, cell: usize) -> usize {
+        let theirs = (side(pc) as usize != v) as usize;
+        let c = if v == 0 { cell } else { r.g.mirror[cell] as usize };
+        theirs * KINDS * CELLS + (kind(pc) - 1) as usize * CELLS + c
+    }
+
+    // A piece arriving on (sign 1) or leaving (sign -1) a cell, in both points of view
+    #[inline]
+    fn change(&self, r: &Rules, acc: &mut Acc, pc: u8, cell: usize, sign: f32) {
         let a = self.acc;
-        // Fixed-size room on the stack, nothing made on the heap for each position (MAX_ACC at most)
-        let mut store = [[0f32; MAX_ACC]; 2];
-        store[0][..a].copy_from_slice(&self.l1b);
-        store[1][..a].copy_from_slice(&self.l1b);
-        let [w0, w1] = &mut store;
-        let mut views = [&mut w0[..a], &mut w1[..a]];            // White's point of view, Black's
-        let mut short = [0f32; 2];                                // the shortcut, for each
-        for i in 0..CELLS {
-            let pc = p.board[i];
-            if pc == 0 { continue; }
-            let k = (kind(pc) - 1) as usize;
-            let c = side(pc);
-            for (v, view) in views.iter_mut().enumerate() {
-                let theirs = (c as usize != v) as usize;
-                let cell = if v == 0 { i } else { r.g.mirror[i] as usize };
-                let input = theirs * KINDS * CELLS + k * CELLS + cell;
-                let row = &self.l1w[input * a..][..a];
-                for (x, w) in view.iter_mut().zip(row) { *x += w; }
-                short[v] += self.psqt[input];
-            }
+        for v in 0..2 {
+            let input = Self::input(r, v, pc, cell);
+            let row = &self.l1w[input * a..][..a];
+            for (x, w) in acc.v[v][..a].iter_mut().zip(row) { *x += sign * w; }
+            acc.short[v] += sign * self.psqt[input];
         }
-        let me = p.turn as usize;
-        let shortcut = (short[me] - short[1 - me]) / 2.0;
-        let (mine, other) = if p.turn == 0 { (&views[0], &views[1]) } else { (&views[1], &views[0]) };
+    }
+
+    // The first layer from every piece on the board
+    pub fn refresh(&self, r: &Rules, p: &Pos, acc: &mut Acc) {
+        let a = self.acc;
+        for v in 0..2 { acc.v[v][..a].copy_from_slice(&self.l1b); acc.short[v] = 0.0; }
+        for i in 0..CELLS { if p.board[i] != 0 { self.change(r, acc, p.board[i], i, 1.0); } }
+    }
+
+    // The first layer after move m in position p, from p's: only what the move changes (the piece
+    // leaves its cell; it, or what it promotes to, arrives; a piece taken goes, en passant too)
+    pub fn update(&self, r: &Rules, p: &Pos, m: &Move, from: &Acc, to: &mut Acc) {
+        let a = self.acc;
+        for v in 0..2 { to.v[v][..a].copy_from_slice(&from.v[v][..a]); }
+        to.short = from.short;
+        let (f, t) = (m.from as usize, m.to as usize);
+        let piece = p.board[f];
+        let placed = if m.promo != 0 { m.promo | (p.turn << 3) } else { piece };
+        self.change(r, to, piece, f, -1.0);
+        self.change(r, to, placed, t, 1.0);
+        if m.en_passant {
+            let gone = r.g.pawn_back[p.turn as usize][t] as usize;
+            self.change(r, to, p.board[gone], gone, -1.0);
+        } else if p.board[t] != 0 {
+            self.change(r, to, p.board[t], t, -1.0);
+        }
+    }
+
+    // Layers 2 to 4 and the shortcut, from the first layer: the judgement for the side to move
+    pub fn output(&self, acc: &Acc, turn: u8) -> f32 {
+        let a = self.acc;
+        let me = turn as usize;
+        let shortcut = (acc.short[me] - acc.short[1 - me]) / 2.0;
+        let (mine, other) = (&acc.v[me][..a], &acc.v[1 - me][..a]);
         let mut x = [0f32; 2 * MAX_ACC];
         for (k, v) in mine.iter().chain(other.iter()).enumerate() { x[k] = v.clamp(0.0, 1.0); }
         let x = &x[..2 * a];
