@@ -3,6 +3,7 @@
 // built to WebAssembly (wasm.rs), it's the browser's bot for hex.
 pub mod hex;
 pub mod search;
+pub mod felipe;   // a port of Felipe Lecot's Hex Chess Engine, to spar with (see the file)
 #[cfg(target_arch = "wasm32")]
 mod wasm;
 

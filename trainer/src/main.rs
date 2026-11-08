@@ -10,10 +10,12 @@
 //       (one a line) and writes, for each: its legal moves, how it stands (mate, stalemate, drawn or
 //       -), check, its value for White by the weights, the position after each move, its phase,
 //       and its extras
+//   cargo run --release -- felipe-check --depth 3       the port of Felipe Lecot's engine
+//       (src/felipe.rs) on positions read one a line, its table kept between them as one run of the
+//       original keeps it: writes "<move> <score> <positions>" for each, to compare with the original
 //
 // Run from the chess folder or trainer/; paths are as given.
-use engine::hex;
-use engine::search;
+use engine::{felipe, hex, search};
 mod train;
 
 use std::io::{BufRead, Write};
@@ -26,10 +28,26 @@ fn main() {
         Some("bench") => bench(&rules, &args),
         Some("train") => train::train(&rules, &args),
         Some("compare") => train::compare(&rules, &args),
+        Some("felipe-check") => felipe_check(&rules, &args),
+        Some("vs-felipe") => train::vs_felipe(&rules, &args),
         _ => {
-            eprintln!("usage: trainer train|compare|bench|check [options] (see src/main.rs and src/train.rs)");
+            eprintln!("usage: trainer train|compare|bench|check|felipe-check [options] (see src/main.rs and src/train.rs)");
             std::process::exit(2);
         }
+    }
+}
+
+fn felipe_check(rules: &hex::Rules, args: &[String]) {
+    let depth: i32 = arg(args, "depth").and_then(|s| s.parse().ok()).unwrap_or(3);
+    let mut f = felipe::Felipe::new(rules);
+    let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+    for line in std::io::stdin().lock().lines() {
+        let line = line.unwrap();
+        let Some(p) = rules.parse(line.trim()) else { writeln!(out, "invalid").unwrap(); continue };
+        let c = f.choose(&p, depth);
+        let mv = c.mv.map(|m| rules.move_text(&m)).unwrap_or_else(|| "none".into());
+        writeln!(out, "{mv} {} {}", c.score, c.nodes).unwrap();
+        out.flush().unwrap();   // at once: whoever sent the position is waiting for this answer
     }
 }
 
