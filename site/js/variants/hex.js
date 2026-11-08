@@ -31,22 +31,33 @@ for (let q = -RADIUS; q <= RADIUS; q++) {
   }
 }
 const at = (q, r) => INDEX.get(`${q},${r}`) ?? -1;
-const step = (i, [dq, dr]) => at(CELLS[i].q + dq, CELLS[i].r + dr);
 
 // Directions as (dq, dr). Up is towards higher ranks (smaller r).
 const EDGES = [[0, -1], [1, -1], [1, 0], [0, 1], [-1, 1], [-1, 0]];       // through a side: rooks
 const CORNERS = [[1, -2], [2, -1], [1, 1], [-1, 2], [-2, 1], [-1, -1]];    // through a corner: bishops
 const KNIGHT = [[1, -3], [2, -3], [3, -2], [3, -1], [2, 1], [1, 2], [-1, 3], [-2, 3], [-3, 2], [-3, 1], [-2, -1], [-1, -2]];
-const PAWN = {   // forward, and the two captures at 60 degrees either side of it
+const back = ([dq, dr]) => [-dq, -dr];
+const PAWN = {   // forward, and the two captures at 60 degrees either side of it (and the way back)
   w: { forward: [0, -1], captures: [[-1, 0], [1, -1]] },
   b: { forward: [0, 1], captures: [[1, 0], [-1, 1]] },
 };
+for (const p of Object.values(PAWN)) { p.backward = back(p.forward); p.from = p.captures.map(back); }
+
+// The cell one step from cell i in direction d, or -1 off the board. Worked out once for every
+// direction above, as a table: a bot looks at thousands of positions a second, and building a text
+// key for every step took a fifth of its time.
+// The table is kept on the direction itself (d.next), so a step is one array read.
+for (const d of [...EDGES, ...CORNERS, ...KNIGHT, ...Object.values(PAWN).flatMap(p => [p.forward, p.backward, ...p.captures, ...p.from])]) {
+  d.next = Int16Array.from(CELLS, c => at(c.q + d[0], c.r + d[1]));
+}
+const step = (i, d) => d.next[i];
 
 const START = {
   w: { K: ['g1'], Q: ['e1'], R: ['c1', 'i1'], N: ['d1', 'h1'], B: ['f1', 'f2', 'f3'], P: ['b1', 'c2', 'd3', 'e4', 'f5', 'g4', 'h3', 'i2', 'k1'] },
 };
 // Black's start is White's mirrored top to bottom: the same file, rank counted from the other end
-const fileLength = f => CELLS.filter(c => c.file === f).length;
+const FILE_LENGTH = Object.fromEntries([...FILES].map(f => [f, CELLS.filter(c => c.file === f).length]));
+const fileLength = f => FILE_LENGTH[f];
 const mirror = name => name[0] + (fileLength(name[0]) - Number(name.slice(1)) + 1);
 START.b = Object.fromEntries(Object.entries(START.w).map(([t, cells]) => [t, cells.map(mirror)]));
 // A pawn may double-step from any of its side's starting cells (also after a capture brought it there)
@@ -56,7 +67,7 @@ const LAST = { w: new Set(), b: new Set() };
 for (const f of FILES) { LAST.w.add(BY_NAME.get(f + fileLength(f))); LAST.b.add(BY_NAME.get(f + '1')); }
 
 const other = c => (c === 'w' ? 'b' : 'w');
-const colourOf = p => (p === p.toUpperCase() ? 'w' : 'b');
+const colourOf = p => (p < 'a' ? 'w' : 'b');   // capitals sort before small letters: White's pieces
 const typeOf = p => p.toUpperCase();
 
 // --- Positions to and from text ----------------------------------------------------------------
@@ -121,7 +132,7 @@ function attacked(board, i, by) {
   }
   for (const d of KNIGHT) if (is(step(i, d), 'N')) return true;
   // A pawn of `by` attacks i if i is one of its capture cells: look back along those directions
-  for (const [dq, dr] of PAWN[by].captures) if (is(step(i, [-dq, -dr]), 'P')) return true;
+  for (const d of PAWN[by].from) if (is(step(i, d), 'P')) return true;
   return false;
 }
 
@@ -180,7 +191,7 @@ function apply(s, m) {
   const piece = board[m.from];
   board[m.to] = m.promo ? (s.turn === 'w' ? m.promo.toUpperCase() : m.promo) : piece;
   board[m.from] = null;
-  if (m.enPassant) board[step(m.to, PAWN[s.turn].forward.map(x => -x))] = null;   // the pawn that went past
+  if (m.enPassant) board[step(m.to, PAWN[s.turn].backward)] = null;   // the pawn that went past
   const pawn = typeOf(piece) === 'P';
   return {
     board, turn: other(s.turn), ep: m.double ?? -1,
@@ -189,11 +200,14 @@ function apply(s, m) {
   };
 }
 
-const legalMoves = s => pseudoMoves(s).filter(m => {
-  const after = apply(s, m);
-  const k = kingOf(after.board, s.turn);
-  return k < 0 || !attacked(after.board, k, after.turn);
-});
+const legalMoves = s => {
+  const king = kingOf(s.board, s.turn);   // found once: it's only somewhere else if it's the piece moving
+  return pseudoMoves(s).filter(m => {
+    const after = apply(s, m);
+    const k = m.from === king ? m.to : king;
+    return k < 0 || !attacked(after.board, k, after.turn);
+  });
+};
 const moveText = m => CELLS[m.from].name + CELLS[m.to].name + (m.promo || '');
 
 // --- How a move is written: Nf3, exf6, f11=Q, Bf1xc4+ (with the start cell's file, rank or both
@@ -236,6 +250,44 @@ function resultOf(s, seen) {
 }
 const keyOf = s => `${layoutOf(s.board)} ${s.turn} ${s.ep < 0 ? '-' : CELLS[s.ep].name}`;
 
+// --- For bots: fast play on this file's own positions and moves (see index.js) -------------------
+// Each cell seen from Black's side: the same file, the rank counted from the other end
+const MIRROR = CELLS.map(c => BY_NAME.get(mirror(c.name)));
+// How far up the board each cell is for White (0 at the bottom corner, 1 at the top), and how near the
+// middle (1 at f6, 0 round the edge): flat-topped cells, so a cell's height is r + q / 2
+const HEIGHT = CELLS.map(c => c.r + c.q / 2), LOW = Math.min(...HEIGHT), HIGH = Math.max(...HEIGHT);
+const CELL_INFO = CELLS.map((c, i) => [(HIGH - HEIGHT[i]) / (HIGH - LOW), 1 - Math.max(Math.abs(c.q), Math.abs(c.r), Math.abs(c.q + c.r)) / RADIUS]);
+const engine = {
+  cells: CELLS.length,
+  mirror: i => MIRROR[i],
+  cellInfo: i => CELL_INFO[i],
+  from: state => parse(state),
+  state: s => format(s),
+  moves: s => legalMoves(s),
+  play: (s, m) => apply(s, m),
+  text: m => moveText(m),
+  turn: s => s.turn,
+  key: s => `${s.board.join(',')}${s.turn}${s.ep}`,   // cheaper than keyOf, and the same when positions are
+  inCheck: s => inCheck(s),
+  // The piece a move takes ('P'..'Q'), or null; a promotion counts as gaining its piece
+  captured: (s, m) => (m.enPassant ? 'P' : s.board[m.to] ? typeOf(s.board[m.to]) : null),
+  promotion: m => (m.promo ? m.promo.toUpperCase() : null),
+  pieces: s => {
+    const out = [];
+    for (let i = 0; i < CELLS.length; i++) if (s.board[i]) out.push([typeOf(s.board[i]), i, colourOf(s.board[i])]);
+    return out;
+  },
+  // A draw whatever happens next: too few pieces to mate, or fifty moves with no capture or pawn move
+  drawn: s => {
+    if (s.half >= 100) return true;
+    const left = s.board.filter(p => p && typeOf(p) !== 'K').map(typeOf);
+    return !left.length || (left.length === 1 && 'BN'.includes(left[0]));
+  },
+  // The result when the side to move has no moves: checkmate, or Gliński's stalemate (¾ to the giver)
+  noMoves: s => (inCheck(s) ? { winner: other(s.turn), reason: 'checkmate' }
+    : { winner: null, reason: 'stalemate', points: { [other(s.turn)]: 0.75, [s.turn]: 0.25 } }),
+};
+
 export default {
   id: 'hex',
   name: 'Hexagonal chess (Gliński)',
@@ -274,4 +326,5 @@ export default {
     return out;
   },
   pieceAt: (state, name) => { const s = parse(state); return s && BY_NAME.has(name) ? s.board[BY_NAME.get(name)] : null; },
+  engine,
 };
