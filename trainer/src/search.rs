@@ -77,6 +77,7 @@ const TABLE_BITS: usize = 18;
 pub struct Searcher<'a> {
     r: &'a Rules,
     w: Weights,
+    net: Option<std::sync::Arc<crate::nn::Net>>,   // when set, it judges positions instead of the weights
     table: Vec<Entry>,
     stamp: u32,
     nodes: u64,
@@ -110,15 +111,20 @@ const VALUE: [i32; 7] = [0, 1, 3, 3, 5, 9, 0];
 impl<'a> Searcher<'a> {
     pub fn new(r: &'a Rules, w: Weights) -> Searcher<'a> {
         Searcher {
-            r, w, table: vec![Entry::default(); 1 << TABLE_BITS], stamp: 0, nodes: 0, limit: 0, clock: None, stopped: false,
+            r, w, table: vec![Entry::default(); 1 << TABLE_BITS], stamp: 0, nodes: 0, limit: 0, clock: None, net: None, stopped: false,
             killers: [[u16::MAX; 2]; MAX_PLY], history: vec![0; CELLS * CELLS], path: Vec::new(),
             moves: (0..MAX_PLY + 8).map(|_| Vec::with_capacity(128)).collect(), scratch: Vec::with_capacity(128),
             seen: Seen::default(),
         }
     }
     pub fn set_weights(&mut self, w: &Weights) { self.w = w.clone(); }
+    pub fn set_net(&mut self, net: Option<std::sync::Arc<crate::nn::Net>>) { self.net = net; }
 
-    fn judge(&self, p: &Pos) -> f64 { let s = evaluate(self.r, p, &self.w); if p.turn == 0 { s } else { -s } }
+    fn judge(&self, p: &Pos) -> f64 {
+        if let Some(net) = &self.net { return net.evaluate(self.r, p) as f64; }   // already for the side to move
+        let s = evaluate(self.r, p, &self.w);
+        if p.turn == 0 { s } else { -s }
+    }
 
     fn terminal(&self, p: &Pos, ply: usize) -> f64 {
         if self.r.in_check(p) { return -(MATE - ply as f64); }

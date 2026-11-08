@@ -17,6 +17,7 @@
 // Run from the chess folder or trainer/; paths are as given.
 use engine::{felipe, hex, search};
 mod train;
+mod datagen;
 
 use std::io::{BufRead, Write};
 
@@ -30,11 +31,76 @@ fn main() {
         Some("compare") => train::compare(&rules, &args),
         Some("felipe-check") => felipe_check(&rules, &args),
         Some("vs-felipe") => train::vs_felipe(&rules, &args),
+        Some("gen-data") => datagen::gen_data(&rules, &args),
+        Some("nn-check") => nn_check(&rules, &args),
+        Some("nn-compare") => nn_compare(&rules, &args),
+        Some("nn-eval") => nn_eval(&rules, &args),
+        Some("net-match") => train::net_match(&rules, &args),
         _ => {
-            eprintln!("usage: trainer train|compare|bench|check|felipe-check [options] (see src/main.rs and src/train.rs)");
+            eprintln!("usage: trainer train|compare|bench|check|felipe-check|vs-felipe|gen-data|nn-check|net-match [options] (see src/main.rs and src/train.rs)");
             std::process::exit(2);
         }
     }
+}
+
+// nn-compare --net N.json --data D.bin [--weights W.json] [--k 0.6]: how well the network's quick
+// judgement and the weights' predict the training target (sigmoid(k * search score)) on the
+// positions in D, as the mean squared error in chances of winning (smaller is better), and how often
+// the two even agree on which side is better
+fn nn_compare(rules: &hex::Rules, args: &[String]) {
+    let net = train::load_net(arg(args, "net").expect("--net file"));
+    let w = train::load(arg(args, "weights").unwrap_or("site/data/bot/hex.json")).1;
+    let k: f64 = arg(args, "k").and_then(|s| s.parse().ok()).unwrap_or(0.6);
+    let bytes = std::fs::read(arg(args, "data").expect("--data file")).unwrap();
+    let take: usize = arg(args, "positions").and_then(|s| s.parse().ok()).unwrap_or(100_000);
+    let sig = |x: f64| 1.0 / (1.0 + (-x).exp());
+    let (mut e_net, mut e_w, mut agree, mut n) = (0.0, 0.0, 0, 0);
+    // Spread through the file, not just its first games
+    let total = bytes.len() / 100;
+    let step = (total / take).max(1);
+    for rec in bytes.chunks_exact(100).step_by(step) {
+        let board: [u8; hex::CELLS] = rec[..91].try_into().unwrap();
+        let p = rules.from_board(board, rec[91]);
+        let score = f32::from_le_bytes(rec[92..96].try_into().unwrap()) as f64;
+        let target = sig(k * score);
+        let a = net.evaluate(rules, &p) as f64;
+        let b = { let s = search::evaluate(rules, &p, &w); if p.turn == 0 { s } else { -s } };
+        e_net += (sig(k * a) - target).powi(2);
+        e_w += (sig(k * b) - target).powi(2);
+        if (a > 0.0) == (b > 0.0) { agree += 1; }
+        n += 1;
+    }
+    println!("{n} positions: error by the network {:.5}, by the weights {:.5}; they agree on who's better in {:.1}%", e_net / n as f64, e_w / n as f64, 100.0 * agree as f64 / n as f64);
+}
+
+// nn-eval --net N.json --states F.txt: the network's judgement (and the weights') of each position in
+// F (one a line, as hex.js writes them), for the side to move, in pawns
+fn nn_eval(rules: &hex::Rules, args: &[String]) {
+    let net = train::load_net(arg(args, "net").expect("--net file"));
+    let w = train::load(arg(args, "weights").unwrap_or("site/data/bot/hex.json")).1;
+    let text = std::fs::read_to_string(arg(args, "states").expect("--states file")).unwrap();
+    for line in text.lines().map(|l| l.trim_start_matches('\u{feff}').trim()).filter(|l| !l.is_empty()) {
+        let Some(p) = rules.parse(line) else { println!("invalid: {line}"); continue };
+        let s = search::evaluate(rules, &p, &w);
+        println!("network {:7.2}   weights {:7.2}   {line}", net.evaluate(rules, &p), if p.turn == 0 { s } else { -s });
+    }
+}
+
+// nn-check --net N.json: what nn.rs makes of the positions nn/train.py saved in the file with
+// PyTorch's answers, and how far apart the two are (they add up in a different order, so a little)
+fn nn_check(rules: &hex::Rules, args: &[String]) {
+    let path = arg(args, "net").expect("--net file");
+    let net = train::load_net(path);
+    let v: serde_json::Value = serde_json::from_str(&std::fs::read_to_string(path).unwrap()).unwrap();
+    let mut worst: f64 = 0.0;
+    let checks = v["check"].as_array().expect("no positions to check");
+    for c in checks {
+        let board: Vec<u8> = c["board"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap() as u8).collect();
+        let p = rules.from_board(board.try_into().unwrap(), c["turn"].as_u64().unwrap() as u8);
+        let diff = (net.evaluate(rules, &p) as f64 - c["value"].as_f64().unwrap()).abs();
+        worst = worst.max(diff);
+    }
+    println!("{} positions: the largest difference from PyTorch is {worst:.6} pawns", checks.len());
 }
 
 fn felipe_check(rules: &hex::Rules, args: &[String]) {
