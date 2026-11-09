@@ -92,7 +92,17 @@ pub struct Searcher<'a> {
     scratch: Vec<Move>,
     pub seen: Seen,   // every earlier position in the game
     exclude: Vec<u16>,   // first moves not to consider (lines(): the best ones already found)
+    pub features: u32,   // which of PVS, NULL_MOVE and LMR the search uses (Searcher::new: DEFAULT_FEATURES)
+    null_at: Vec<bool>,  // the move into ply i was a pass (a null move): no second one straight after
 }
+
+// Search refinements, each switchable so a match can show what it's worth (trainer net-match
+// --features A --features-b B): principal variation search, null-move pruning, late move reductions
+pub const PVS: u32 = 1;
+pub const NULL_MOVE: u32 = 2;
+pub const LMR: u32 = 4;
+pub const DEFAULT_FEATURES: u32 = 0;
+const EPS: f64 = 0.001;   // a "null window": just above alpha, in pawns
 
 // One of the best lines from a position: its first move's score (pawns, for the side to move; mate
 // MATE less the plies to it), how deep it was searched, and the moves (from the position table)
@@ -121,6 +131,7 @@ impl<'a> Searcher<'a> {
             killers: [[u16::MAX; 2]; MAX_PLY], history: vec![0; CELLS * CELLS], path: Vec::new(),
             moves: (0..MAX_PLY + 8).map(|_| Vec::with_capacity(128)).collect(), scratch: Vec::with_capacity(128),
             seen: Seen::default(), accs: vec![crate::nn::Acc::default(); MAX_PLY + 8], exclude: Vec::new(),
+            features: DEFAULT_FEATURES, null_at: vec![false; MAX_PLY + 8],
         }
     }
 
@@ -205,8 +216,20 @@ impl<'a> Searcher<'a> {
         s
     }
 
-    fn order(&self, p: &Pos, list: &mut Vec<Move>, best: u16, ply: usize) {
-        list.sort_by_cached_key(|m| std::cmp::Reverse(self.rank(p, m, best, ply)));
+    // Best first; moves ranked equal keep their order. An insertion sort on the stack: the lists are
+    // short, and sort_by_cached_key took memory from the heap at every position (Nov 8: +3.5%)
+    fn order(&self, p: &Pos, list: &mut [Move], best: u16, ply: usize) {
+        const MAX: usize = 256;
+        if list.len() > MAX { list.sort_by_cached_key(|m| std::cmp::Reverse(self.rank(p, m, best, ply))); return; }
+        let mut keys = [0i32; MAX];
+        for (k, m) in keys.iter_mut().zip(list.iter()) { *k = self.rank(p, m, best, ply); }
+        for i in 1..list.len() {
+            let (k, m) = (keys[i], list[i]);
+            let mut j = i;
+            while j > 0 && keys[j - 1] < k { keys[j] = keys[j - 1]; list[j] = list[j - 1]; j -= 1; }
+            keys[j] = k;
+            list[j] = m;
+        }
     }
 
     fn quiet(&mut self, p: &Pos, mut alpha: f64, beta: f64, ply: usize) -> f64 {
@@ -239,12 +262,12 @@ impl<'a> Searcher<'a> {
         if self.tick() { return 0.0; }
         if ply > 0 && (self.path.contains(&p.hash) || self.seen.contains(&p.hash)) { return 0.0; }
         if self.r.drawn(p) { return 0.0; }
-        let mut list = std::mem::take(&mut self.moves[ply]);
-        self.r.legal(p, &mut list, &mut self.scratch);
-        if list.is_empty() { self.moves[ply] = list; return self.terminal(p, ply); }
-        if self.r.in_check(p) && ply < CHECK_PLY { depth += 1; }
-        if depth <= 0 || ply >= MAX_PLY - 1 { self.moves[ply] = list; return self.quiet(p, alpha, beta, ply); }
-
+        let in_check = self.r.in_check(p);
+        if in_check && ply < CHECK_PLY { depth += 1; }
+        // At the end of the line, the captures-only search (which finds mate and stalemate itself);
+        // and a position already worked out deeply enough is answered from the table. Both before
+        // listing the moves: most positions are one or the other, and the list would go unused
+        if depth <= 0 || ply >= MAX_PLY - 1 { return self.quiet(p, alpha, beta, ply); }
         let slot = (p.hash as usize) & ((1 << TABLE_BITS) - 1);
         let known = self.table[slot];
         let mut best_code = u16::MAX;
@@ -252,18 +275,51 @@ impl<'a> Searcher<'a> {
             best_code = known.best;
             if known.depth as i32 >= depth {
                 let s = known.score as f64;
-                if known.flag == 0 || (known.flag < 0 && s <= alpha) || (known.flag > 0 && s >= beta) { self.moves[ply] = list; return s; }
+                if known.flag == 0 || (known.flag < 0 && s <= alpha) || (known.flag > 0 && s >= beta) { return s; }
             }
         }
+        // Null move (NULL_MOVE): if passing would still leave this side at or above beta, a real
+        // move will too. Not in check, not twice running, not with only pawns left (zugzwang: a
+        // stalemate scores ¾ in Gliński's chess), not near mate scores
+        if self.features & NULL_MOVE != 0 && !in_check && depth >= 3 && ply > 0 && !self.null_at[ply]
+            && beta.abs() < MATE - 100.0 && self.r.has_pieces(p) && self.judge(p, ply) >= beta {
+            let reduce = 2 + depth / 4;
+            let child = self.r.null_move(p);
+            if self.net.is_some() { self.accs[ply + 1] = self.accs[ply]; }   // the same pieces
+            self.null_at[ply + 1] = true;
+            self.path.push(p.hash);
+            let score = -self.search(&child, depth - 1 - reduce, -beta, -beta + EPS, ply + 1);
+            self.path.pop();
+            self.null_at[ply + 1] = false;
+            if self.stopped { return 0.0; }
+            if score >= beta { return if score > MATE - 100.0 { beta } else { score }; }
+        }
+        let mut list = std::mem::take(&mut self.moves[ply]);
+        self.r.legal(p, &mut list, &mut self.scratch);
+        if list.is_empty() { self.moves[ply] = list; return self.terminal(p, ply); }
         let start = alpha;
         let mut best = f64::NEG_INFINITY;
         let mut best_move = u16::MAX;
         self.order(p, &mut list, best_code, ply);
         self.path.push(p.hash);
-        for m in list.iter() {
+        for (i, m) in list.iter().enumerate() {
             self.descend(p, m, ply);
             let child = self.r.play(p, m);
-            let score = -self.search(&child, depth - 1, -beta, -alpha, ply + 1);
+            let score = if self.features & PVS == 0 || i == 0 {
+                -self.search(&child, depth - 1, -beta, -alpha, ply + 1)
+            } else {
+                // PVS: is this move better than the best so far? Asked with a window just above alpha
+                // (cheap), and searched in full only if so. LMR: late quiet moves are first asked a
+                // ply or two shallower, and again at full depth if they turn out better
+                let c = code(m);
+                let late = self.features & LMR != 0 && depth >= 3 && i >= 3 && !in_check && m.captured == 0 && m.promo == 0
+                    && self.killers[ply][0] != c && self.killers[ply][1] != c && !self.r.in_check(&child);
+                let reduce = if !late { 0 } else if i >= 8 && depth >= 5 { 2 } else { 1 };
+                let mut s = -self.search(&child, depth - 1 - reduce, -alpha - EPS, -alpha, ply + 1);
+                if !self.stopped && s > alpha && reduce > 0 { s = -self.search(&child, depth - 1, -alpha - EPS, -alpha, ply + 1); }
+                if !self.stopped && s > alpha && s < beta { s = -self.search(&child, depth - 1, -beta, -alpha, ply + 1); }
+                s
+            };
             if self.stopped { break; }
             if score > best { best = score; best_move = code(m); }
             if score > alpha { alpha = score; }
@@ -300,6 +356,7 @@ impl<'a> Searcher<'a> {
         self.limit = limit;
         self.stopped = false;
         self.killers = [[u16::MAX; 2]; MAX_PLY];
+        self.null_at.iter_mut().for_each(|x| *x = false);
         for h in self.history.iter_mut() { *h /= 8; }
         let mut root_moves = Vec::new();
         self.r.legal(root, &mut root_moves, &mut self.scratch);
@@ -319,10 +376,16 @@ impl<'a> Searcher<'a> {
             self.order(root, &mut root_moves, prev, 0);
             self.path.clear();
             self.path.push(root.hash);
-            for m in root_moves.clone().iter() {
+            for (i, m) in root_moves.clone().iter().enumerate() {
                 self.descend(root, m, 0);
                 let child = self.r.play(root, m);
-                let score = -self.search(&child, depth - 1, f64::NEG_INFINITY, -alpha, 1);
+                let mut score;
+                if self.features & PVS != 0 && i > 0 {
+                    score = -self.search(&child, depth - 1, -alpha - EPS, -alpha, 1);
+                    if !self.stopped && score > alpha { score = -self.search(&child, depth - 1, f64::NEG_INFINITY, -alpha, 1); }
+                } else {
+                    score = -self.search(&child, depth - 1, f64::NEG_INFINITY, -alpha, 1);
+                }
                 if self.stopped { break; }
                 if score > alpha { alpha = score; best = Some(*m); }
             }

@@ -166,8 +166,15 @@ fn check(rules: &hex::Rules, args: &[String]) {
         let names: Vec<&str> = moves.iter().map(|m| m.0.as_str()).collect();
         let children: Vec<&str> = moves.iter().map(|m| m.1.as_str()).collect();
         let extras: Vec<String> = rules.extras(&p).iter().map(|x| x.to_string()).collect();
-        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", rules.format(&p), names.join(" "), status, rules.in_check(&p), search::evaluate(rules, &p, &w),
-            children.join("|"), rules.phase(&p), extras.join(",")).unwrap();
+        // The captures-only search's shortcut (legal_captures: only captures and promotions made,
+        // "any legal move" by a quick look) must agree with the full list, order included
+        let full: Vec<String> = list.iter().filter(|m| m.captured != 0 || m.promo != 0).map(|m| rules.move_text(m)).collect();
+        let (mut caps, mut scratch2) = (Vec::new(), Vec::new());
+        let any = rules.legal_captures(&p, &mut caps, &mut scratch2);
+        let quick: Vec<String> = caps.iter().map(|m| rules.move_text(m)).collect();
+        let captures = if quick == full && any == !list.is_empty() { "ok".to_string() } else { format!("captures {quick:?} against {full:?}, any {any}") };
+        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", rules.format(&p), names.join(" "), status, rules.in_check(&p), search::evaluate(rules, &p, &w),
+            children.join("|"), rules.phase(&p), extras.join(","), captures).unwrap();
     }
 }
 
@@ -196,5 +203,35 @@ fn bench(rules: &hex::Rules, args: &[String]) {
         let secs = t.elapsed().as_secs_f64();
         println!("{name}: depth {}, {} positions in {:.2} s ({:.0}/s), plays {}, score {:.2}",
             c.depth, c.nodes, secs, c.nodes as f64 / secs, rules.move_text(&c.mv.unwrap()), c.score);
+    }
+    // --suite: 16 positions along a game (every 4th move of the bot playing itself), each searched
+    // for --suite positions; the total speed, and a fingerprint of every answer (move, score, depth,
+    // positions looked at): a change meant only to be faster must leave the fingerprint as it was
+    if let Some(per) = arg(args, "suite").and_then(|s| s.parse::<u64>().ok()) {
+        let mut g = search::Searcher::new(rules, train::starting());
+        let mut p = rules.start();
+        let mut suite = Vec::new();
+        for i in 0..64 {
+            if i % 4 == 0 { suite.push(p.clone()); }
+            g.seen.insert(p.hash);
+            let Some(m) = g.choose(&p, 2000).mv else { break };
+            p = rules.play(&p, &m);
+        }
+        let (mut total, mut secs, mut print, mut depths) = (0u64, 0f64, 0xcbf29ce484222325u64, 0u32);
+        let features: u32 = arg(args, "features").and_then(|s| s.parse().ok()).unwrap_or(search::DEFAULT_FEATURES);
+        for pos in &suite {
+            let mut s = search::Searcher::new(rules, weights.clone());
+            s.set_net(net.clone());
+            s.features = features;
+            s.seen.insert(pos.hash);
+            let t = std::time::Instant::now();
+            let c = s.choose(pos, per);
+            depths += c.depth;
+            secs += t.elapsed().as_secs_f64();
+            total += c.nodes;
+            let text = format!("{} {:.6} {} {}", c.mv.map(|m| rules.move_text(&m)).unwrap_or_default(), c.score, c.depth, c.nodes);
+            for b in text.bytes() { print = (print ^ b as u64).wrapping_mul(0x100000001b3); }
+        }
+        println!("suite: {} positions, {total} looked at in {secs:.2} s ({:.0}/s), depth {:.2} on average, fingerprint {print:016x}", suite.len(), total as f64 / secs, depths as f64 / suite.len() as f64);
     }
 }

@@ -413,19 +413,113 @@ impl Rules {
     }
 
     // The legal captures and promotions only (what following captures to the end needs), and whether
-    // there's any legal move at all, from one pass over the moves
+    // there's any legal move at all. Only the captures and promotions are made (in pseudo()'s order),
+    // and "any legal move" is usually settled by a legal capture or by one quick look (below)
     pub fn legal_captures(&self, p: &Pos, out: &mut Vec<Move>, scratch: &mut Vec<Move>) -> bool {
-        self.pseudo(p, scratch);
+        self.pseudo_captures(p, scratch);
         out.clear();
         let (check, pinned) = self.pins(p);
         let ok = |m: &Move| !self.needs_test(p, m, check, pinned) || self.safe(p, m);
-        let mut any = false;
-        for m in scratch.iter() {
-            if m.captured != 0 || m.promo != 0 {
-                if ok(m) { out.push(*m); any = true; }
-            } else if !any && ok(m) { any = true; }
+        for m in scratch.iter() { if ok(m) { out.push(*m); } }
+        if !out.is_empty() { return true; }
+        if !check && self.free_quiet_move(p, pinned) { return true; }
+        // Rare: in check, or nothing obvious; every move, tested
+        self.pseudo(p, scratch);
+        scratch.iter().any(|m| ok(m))
+    }
+
+    // Out of check, a piece that isn't pinned (nor the king) moving to an empty cell can't leave the
+    // king attacked: is there one such move? (Pawns: one step forward, short of the last cell.)
+    fn free_quiet_move(&self, p: &Pos, pinned: u128) -> bool {
+        let g = &self.g;
+        let b = &p.board;
+        let s = p.turn as usize;
+        let empty = |j: i16| j >= 0 && b[j as usize] == 0;
+        for i in 0..CELLS {
+            let pc = b[i];
+            if pc == 0 || side(pc) != p.turn || pinned & (1u128 << i) != 0 { continue; }
+            let found = match kind(pc) {
+                ROOK => (0..6).any(|d| empty(g.edges[d][i])),
+                BISHOP => (0..6).any(|d| empty(g.corners[d][i])),
+                QUEEN => (0..6).any(|d| empty(g.edges[d][i]) || empty(g.corners[d][i])),
+                KNIGHT => (0..12).any(|d| empty(g.knight[d][i])),
+                PAWN => { let one = g.pawn_forward[s][i]; empty(one) && !g.last[s][one as usize] }
+                _ => false,   // the king: its moves need the full test
+            };
+            if found { return true; }
         }
-        any
+        false
+    }
+
+    // pseudo()'s captures and promotions only, in the same order
+    pub fn pseudo_captures(&self, p: &Pos, out: &mut Vec<Move>) {
+        out.clear();
+        let g = &self.g;
+        let turn = p.turn;
+        let b = &p.board;
+        let add = |out: &mut Vec<Move>, from: usize, to: usize, promo: u8, ep: bool| {
+            let captured = if ep { PAWN } else { kind(b[to]) };
+            out.push(Move { from: from as u8, to: to as u8, promo, captured, en_passant: ep, double: -1 });
+        };
+        for i in 0..CELLS {
+            let pc = b[i];
+            if pc == 0 || side(pc) != turn { continue; }
+            let slide = |out: &mut Vec<Move>, table: &[[i16; CELLS]]| {
+                for dir in table {
+                    let mut j = dir[i];
+                    while j >= 0 {
+                        let t = b[j as usize];
+                        if t == 0 { j = dir[j as usize]; continue; }
+                        if side(t) != turn { add(out, i, j as usize, 0, false); }
+                        break;
+                    }
+                }
+            };
+            let leap = |out: &mut Vec<Move>, table: &[[i16; CELLS]]| {
+                for dir in table {
+                    let j = dir[i];
+                    if j >= 0 { let t = b[j as usize]; if t != 0 && side(t) != turn { add(out, i, j as usize, 0, false); } }
+                }
+            };
+            match kind(pc) {
+                ROOK => slide(out, &g.edges),
+                BISHOP => slide(out, &g.corners),
+                QUEEN => { slide(out, &g.edges); slide(out, &g.corners); }
+                KING => { leap(out, &g.edges); leap(out, &g.corners); }
+                KNIGHT => leap(out, &g.knight),
+                _ => {
+                    let s = turn as usize;
+                    let promote = |out: &mut Vec<Move>, j: usize| { for promo in [QUEEN, ROOK, BISHOP, KNIGHT] { add(out, i, j, promo, false); } };
+                    let one = g.pawn_forward[s][i];
+                    if one >= 0 && b[one as usize] == 0 && g.last[s][one as usize] { promote(out, one as usize); }
+                    for c in 0..2 {
+                        let j = g.pawn_captures[s][c][i];
+                        if j < 0 { continue; }
+                        let t = b[j as usize];
+                        if t != 0 && side(t) != turn {
+                            if g.last[s][j as usize] { promote(out, j as usize); } else { add(out, i, j as usize, 0, false); }
+                        } else if j == p.ep { add(out, i, j as usize, 0, true); }
+                    }
+                }
+            }
+        }
+    }
+
+    // The position with the other side to move and nothing else changed (the search's null move:
+    // never a real move). En passant lapses, as it would after any move.
+    pub fn null_move(&self, p: &Pos) -> Pos {
+        let mut n = p.clone();
+        let mut h = p.hash ^ self.keys.black;
+        if p.ep >= 0 { h ^= self.keys.ep[p.ep as usize]; }
+        n.ep = -1;
+        n.turn = p.turn ^ 1;
+        n.hash = h;
+        n
+    }
+
+    // Has the side to move a piece besides its king and pawns?
+    pub fn has_pieces(&self, p: &Pos) -> bool {
+        p.board.iter().any(|&pc| pc != 0 && side(pc) == p.turn && !matches!(kind(pc), PAWN | KING))
     }
 
     // A draw whatever happens next: too few pieces to mate, or the fifty-move rule
