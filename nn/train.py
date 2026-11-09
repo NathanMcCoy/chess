@@ -104,6 +104,23 @@ def tables(path):
     return out
 
 
+def load_into(net, path, acc, hidden):
+    """A network this script wrote (JSON) into `net`, which must be the same size. The file has layer 1
+    as [input][acc] (a piece adds its row, for the Rust): PyTorch keeps it as [acc][input]."""
+    w = json.load(open(path))
+    if w['acc'] != acc or w.get('hidden', 32) != hidden:
+        raise SystemExit(f"--init {path} is {w['acc']}/{w.get('hidden', 32)}, not {acc}/{hidden}")
+    t = lambda x, shape: torch.as_tensor(np.array(x, dtype=np.float32).reshape(shape))
+    state = {
+        'l1.weight': t(w['l1']['w'], (INPUTS, acc)).T.contiguous(), 'l1.bias': t(w['l1']['b'], (acc,)),
+        'l2.weight': t(w['l2']['w'], (hidden, 2 * acc)), 'l2.bias': t(w['l2']['b'], (hidden,)),
+        'l3.weight': t(w['l3']['w'], (hidden, hidden)), 'l3.bias': t(w['l3']['b'], (hidden,)),
+        'l4.weight': t(w['l4']['w'], (1, hidden)), 'l4.bias': t(w['l4']['b'], (1,)),
+        'psqt.weight': t(w['psqt'], (1, INPUTS)),
+    }
+    net.load_state_dict({k: v.to(next(net.parameters()).device) for k, v in state.items()})
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('data', nargs='+')
@@ -117,6 +134,10 @@ def main():
     ap.add_argument('--acc', type=int, default=128, help="layer 1's numbers for each point of view")
     ap.add_argument('--hidden', type=int, default=32, help='layers 2 and 3: how many numbers each')
     ap.add_argument('--start', default='site/data/bot/hex.json', help='weights to start the shortcut from ("none": nothing)')
+    ap.add_argument('--init', help='a network (JSON, this script\'s) of the same size to start from, instead of afresh: '
+                    'a warm start, so a few passes do (nn/loop.mjs --warm)')
+    ap.add_argument('--patience', type=int, default=0,
+                    help='stop when the kept-back error has not improved for this many passes, keeping the best pass (0: never)')
     a = ap.parse_args()
     torch.manual_seed(a.seed)
     dev = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -136,6 +157,9 @@ def main():
         return a.lam * r + (1 - a.lam) * torch.sigmoid(a.k * s)
 
     net = Net(None if a.start == 'none' else tables(a.start), a.acc, a.hidden).to(dev)
+    if a.init:
+        load_into(net, a.init, a.acc, a.hidden)
+        print(f'starting from {a.init}')
     opt = torch.optim.Adam(net.parameters(), lr=a.lr)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=a.epochs)
 
@@ -143,6 +167,7 @@ def main():
         mine, other = features(d['board'], d['turn'], dev)
         return torch.mean((torch.sigmoid(a.k * net(mine, other)) - target(d)) ** 2)
 
+    best_held, best_state, since = float('inf'), None, 0
     for epoch in range(a.epochs):
         t = time.time()
         net.train()
@@ -160,6 +185,18 @@ def main():
         with torch.no_grad():
             held = sum(loss_on(test[i:i + a.batch]).item() * len(test[i:i + a.batch]) for i in range(0, len(test), a.batch)) / len(test)
         print(f'  epoch {epoch + 1}: error {total / len(train):.5f}, on the kept-back positions {held:.5f}, {time.time() - t:.1f} s')
+        if a.patience:
+            if held < best_held:
+                best_held, since = held, 0
+                best_state = {k: v.detach().clone() for k, v in net.state_dict().items()}
+            else:
+                since += 1
+                if since >= a.patience:
+                    print(f'  stopped: no better on the kept-back positions for {since} passes')
+                    break
+    if best_state is not None:
+        net.load_state_dict(best_state)   # the best pass, not the last
+        print(f'  kept the best pass: on the kept-back positions {best_held:.5f}')
 
     # The weights, for trainer/src/nn.rs (row-major: each output's weights in a row)
     w = {name: p.detach().cpu().numpy() for name, p in net.state_dict().items()}
