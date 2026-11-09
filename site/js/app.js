@@ -34,6 +34,7 @@ let lineRequest = 0;        // numbers each request, so lines that arrive for a 
 let lineState = { fen: null, lines: [], depth: 0 };
 let accounts = null;        // signing in, and keeping your game in your account (account.js)
 let online = null;          // a game against a person, while one is open: { id, you, view, at, stop, problem }
+let evalBar = false;        // your game against Stockfish shows the evaluation bar while playing (New game box)
 
 // --- Saving in this browser (and, when signed in, in your account: account.js) ----------------
 function load() {
@@ -53,6 +54,7 @@ function loadFrom(saved) {
     game = g;
     player = saved.player === 'b' ? 'b' : 'w';
     level = Math.min(10, Math.max(1, Number(saved.level) || 3));
+    evalBar = saved.evalBar === true;
     orientation = saved.orientation === 'black' ? 'black' : saved.orientation === 'white' ? 'white' : COLOR[player];
     result = saved.result && saved.result.score ? saved.result : null;
     // Games saved before results recorded a winner: work it out from the score
@@ -67,7 +69,7 @@ function loadFrom(saved) {
 
 // The game as it's saved. `variant` says which rules it's played by (saves from before it existed
 // are chess); the hexagonal variant will save its own kind.
-const saved = () => ({ variant: 'chess', pgn: game.pgn(), player, level, orientation, result, review });
+const saved = () => ({ variant: 'chess', pgn: game.pgn(), player, level, orientation, result, review, evalBar });
 
 function save() {
   if (online) return;   // a game against a person is kept by the server; your Stockfish game stays as it was
@@ -511,12 +513,60 @@ function san(fen, uci) {
   try { return new Chess(fen).move({ from: uci.slice(0, 2), to: uci.slice(2, 4), promotion: uci[4] }).san; } catch { return uci; }
 }
 
+// The evaluation bar: White's chances in a position, from a score for the side to move
+// (no score yet: level, with no number)
+function drawBar(score, turn) {
+  const bar = $('evalbar');
+  const white = score ? whiteChance(score, turn) : 50;
+  bar.classList.toggle('flipped', orientation === 'black');
+  bar.classList.toggle('black-ahead', white < 50);
+  bar.querySelector('.fill').style.height = `${white}%`;
+  bar.querySelector('.score').textContent = score ? evalText(score, turn).replace(/^[+−]/, '') : '';
+}
+
+// The evaluation bar while playing (chosen when the game was made: for a game against a person, by
+// its maker, for both players): a Stockfish of its own judges the position on the board, a fresh
+// question each time it changes (a question still being answered is stopped, its answer dropped)
+const showEval = () => (online ? !!online.view.evalBar : evalBar);
+let evaler = null, evalBusy = false;
+let evalState = { fen: null };
+function wantEval(fen) {
+  if (evalState.fen !== fen) {
+    const g = new Chess(fen);
+    evalState = { fen, turn: g.turn(), score: g.isCheckmate() ? { mate: 0 } : g.isDraw() || g.isStalemate() ? { cp: 0 } : null };
+    if (!evalState.score) askEval();
+  }
+  drawBar(evalState.score, evalState.turn);
+}
+async function askEval() {
+  if (evalBusy) { evaler.stop(); return; }   // the loop below asks again, about where the board is now
+  evalBusy = true;
+  evaler ||= new Engine();
+  try {
+    for (;;) {
+      const st = evalState;
+      if (!st.fen || st.score || !showEval()) break;
+      const r = await evaler.analyse(st.fen, { depth: 14, movetime: 400 });
+      if (evalState !== st) continue;
+      if (!r.score) break;
+      evalState = { ...st, score: r.score };
+      if (!reviewing) drawBar(evalState.score, evalState.turn);
+    }
+  } catch { /* Stockfish not working: the bar just stays level */ } finally { evalBusy = false; }
+}
+
 function renderReview(moves, shown) {
   document.body.classList.toggle('reviewing', reviewing);
+  const live = !reviewing && showEval();
+  document.body.classList.toggle('eval-on', live);
   $('review').hidden = !reviewing;
-  $('evalbar').hidden = !reviewing;
+  $('evalbar').hidden = !reviewing && !live;
   $('rv-summary').hidden = !reviewing;
-  if (!reviewing) { board.setAutoShapes([]); return; }
+  if (!reviewing) {
+    board.setAutoShapes([]);
+    if (live) wantEval(shown === 0 ? startFen() : moves[shown - 1].after);
+    return;
+  }
   const positions = review ? review.positions : [];
   const total = moves.length + 1;
   const fullMoves = Math.ceil(moves.length / 2);
@@ -531,12 +581,7 @@ function renderReview(moves, shown) {
 
   // The evaluation bar: White's chances in the position on the board
   const here = positions[shown];
-  const bar = $('evalbar');
-  const white = here ? whiteChance(here.score, here.turn) : 50;
-  bar.classList.toggle('flipped', orientation === 'black');
-  bar.classList.toggle('black-ahead', white < 50);
-  bar.querySelector('.fill').style.height = `${white}%`;
-  bar.querySelector('.score').textContent = here ? evalText(here.score, here.turn).replace(/^[+−]/, '') : '';
+  drawBar(here && here.score, here && here.turn);
 
   // The verdict on the move just played, and an arrow for what Stockfish would have played
   const verdict = $('rv-verdict');
@@ -889,6 +934,7 @@ function openNewGame() {
   const slider = $('level');
   slider.value = String(level);
   box.querySelector(`input[name=side][value="${player}"]`).checked = true;
+  $('nd-eval').checked = evalBar;
   const showLevel = () => { $('level-name').textContent = `${slider.value}: ${LEVELS[slider.value - 1].name}`; };
   showLevel();
   slider.oninput = showLevel;
@@ -908,6 +954,7 @@ function openNewGame() {
     if (box.querySelector('input[name=variant]:checked').value === 'hex') return location.assign('/hex?new=1');
     let side = box.querySelector('input[name=side]:checked').value;
     if (side === 'random') side = Math.random() < 0.5 ? 'w' : 'b';
+    evalBar = $('nd-eval').checked;
     newGame(side, Number(slider.value));
   }, { once: true });
   box.showModal();

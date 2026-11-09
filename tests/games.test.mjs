@@ -324,3 +324,20 @@ test('a signed-in player accepts a rematch by their account, from another device
   const r = games.rematch(made.id, made.seat, null, { color: 'b', times: TEN_FIVE });
   assert.equal(games.join(r.id, null, alice, null).color, 'w', 'her account proves she played the last game');
 });
+
+test('the evaluation bar: off unless its maker asks, shown in Live games, kept by a rematch that asks', () => {
+  const { games } = setup();
+  const plain = games.create({ color: 'w', times: TEN_FIVE });
+  assert.equal(games.get(plain.id).evalBar, false, 'off by default');
+  const made = games.create({ color: 'w', times: TEN_FIVE, listed: true, evalBar: true });
+  assert.equal(games.get(made.id).evalBar, true);
+  assert.equal(games.lobby().open.find(g => g.id === made.id).evalBar, true, 'Live games says so');
+  const joined = games.join(made.id, null);
+  games.resign(made.id, joined.seat);
+  const r = games.rematch(made.id, made.seat, null, { color: 'b', times: TEN_FIVE, evalBar: true });
+  assert.equal(games.get(r.id).evalBar, true);
+  // Declined, then offered again without it: off (each offer chooses afresh)
+  games.refuse(r.id, joined.seat);
+  const again = games.rematch(made.id, made.seat, null, { color: 'b', times: TEN_FIVE });
+  assert.equal(games.get(again.id).evalBar, false);
+});

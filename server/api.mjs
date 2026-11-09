@@ -6,7 +6,8 @@
 //   GET  /api/game                                            -> { data, updated } (data null if none)
 //   PUT  /api/game     { data }                               -> { updated }
 // Games by challenge link (games.mjs). A seat key comes in the body, or the X-Seat header for GETs:
-//   POST /api/games    { variant, color, times, listed }      -> 201 { id, seat, color }  (listed: in Live games)
+//   POST /api/games    { variant, color, times, listed, evalBar } -> 201 { id, seat, color }  (listed: in Live games;
+//                                                               evalBar: the evaluation bar shown to everyone during play)
 //   GET  /api/lobby, and /api/lobby/events (SSE)                -> { open, live }: Live games
 //   GET  /api/games/ID                                        -> the game ("you": your side, if any)
 //   GET  /api/games/ID/events                                 -> the game, then again on every change (SSE)
@@ -184,7 +185,7 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
         if (!id && req.method === 'POST') {
           if (!limits.games.take(who(req), now())) throw new AccountError(429, 'Too many new games from here. Try again later.');
           const body = await readJson(req);
-          return reply(res, 201, games.create({ variant: body.variant, color: body.color, times: body.times, account: me, listed: body.listed === true }));
+          return reply(res, 201, games.create({ variant: body.variant, color: body.color, times: body.times, account: me, listed: body.listed === true, evalBar: body.evalBar === true }));
         }
         if (id && !action && req.method === 'GET') return reply(res, 200, games.get(id, req.headers['x-seat'], me));
         if (id && action === 'events' && req.method === 'GET') return watch(req, res, id);
@@ -194,7 +195,7 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
           const act = { join: () => games.join(id, body.seat, me, body.proof), move: () => games.move(id, body.seat, me, body.move),
             resign: () => games.resign(id, body.seat, me), draw: () => games.offerDraw(id, body.seat, me),
             decline: () => games.declineDraw(id, body.seat, me), abort: () => games.abort(id, body.seat, me),
-            rematch: () => games.rematch(id, body.seat, me, { variant: body.variant, color: body.color, times: body.times }),
+            rematch: () => games.rematch(id, body.seat, me, { variant: body.variant, color: body.color, times: body.times, evalBar: body.evalBar === true }),
             refuse: () => games.refuse(id, body.proof, me) }[action];
           return reply(res, action === 'rematch' ? 201 : 200, act());
         }

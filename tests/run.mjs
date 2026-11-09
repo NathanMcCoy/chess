@@ -163,8 +163,15 @@ async function flow(page, who, { touch, mouse, freshPage }) {
   await dlg.locator('input[value=b]').check();
   await dlg.locator('#level').evaluate(el => { el.value = '9'; el.dispatchEvent(new Event('input')); });
   check(who, (await dlg.locator('#level-name').innerText()) === '9: Grandmaster', 'the level slider names each level', await dlg.locator('#level-name').innerText());
+  check(who, !(await page.locator('#evalbar').isVisible()), 'no evaluation bar while playing unless asked for');
+  await dlg.locator('#nd-eval').check();
   await dlg.getByRole('button', { name: 'Start' }).click();
   await waitMoves(page, 1, 'Stockfish opening as White');
+  // The evaluation bar, asked for in the New game box: shown beside the board, with a score once
+  // Stockfish has judged the position, and kept with the game
+  await page.waitForFunction(() => document.querySelector('#evalbar .score').textContent !== '', null, { timeout: 15000 }).catch(() => {});
+  const bar = await page.evaluate(k => [!document.getElementById('evalbar').hidden, document.body.classList.contains('eval-on'), document.querySelector('#evalbar .score').textContent, JSON.parse(localStorage.getItem(k)).evalBar], 'chess.game.v1');
+  check(who, bar[0] && bar[1] && /^(\d+\.\d|M\d+)$/.test(bar[2]) && bar[3] === true, 'with the box ticked, the evaluation bar shows while playing, with a score, saved with the game', JSON.stringify(bar));
   check(who, await page.locator('#board.orientation-black').count() === 1, 'playing Black turns the board round');
   check(who, /level 9, Grandmaster/.test(await page.locator('#top-player .name').innerText()), 'Stockfish is named with its level, at the top');
   await page.waitForFunction(() => document.querySelector('#status').textContent === 'Your move.');
@@ -958,9 +965,14 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
     await bd.waitFor();
     await bd.locator('input[name=bot-side][value=b]').check();
     await bd.locator('input[name=bot-level][value="1"]').check();
+    await bd.locator('#bot-eval').check();
     await bd.getByRole('button', { name: 'Start' }).click();
     const plies = n => bp.waitForFunction(n => document.querySelectorAll('#moves button').length === n, n, { timeout: 15000 });
     await plies(1);
+    // The evaluation bar, asked for in the Play the bot box: the bot judges the position on the board
+    await bp.waitForFunction(() => document.querySelector('#evalbar .score').textContent !== '', null, { timeout: 15000 }).catch(() => {});
+    const hexBar = await bp.evaluate(() => [!document.getElementById('evalbar').hidden, document.body.classList.contains('eval-on'), document.querySelector('#evalbar .score').textContent, document.getElementById('eval-on').checked]);
+    check(who, hexBar[0] && hexBar[1] && /^(\d+\.\d|M\d+)$/.test(hexBar[2]) && hexBar[3], 'with Play the bot’s box ticked, the evaluation bar shows while playing, with a score', JSON.stringify(hexBar));
     const [c5, c7] = [await hexCell(bp, 'f5'), await hexCell(bp, 'f7')];
     const names = async () => `${await bp.locator('#bottom-player .name').innerText()} / ${await bp.locator('#top-player .name').innerText()}`;
     check(who, (await status(bp)) === 'Your move.' && (await names()) === 'You / The bot (Quick)' && c7.y > c5.y,
@@ -989,6 +1001,13 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
     await bp.locator('#go-close').click();
     await bp.locator('#bot-off').click();
     check(who, (await names()) === 'Black / White' && await bp.locator('#bot-row').isHidden(), 'Two players instead goes back to two players', await names());
+    // Two players on one device: the row below the board turns the bar on and off
+    const barShown = () => bp.evaluate(() => !document.getElementById('evalbar').hidden);
+    const before = await barShown();
+    await bp.locator('#eval-on').check();
+    const on = await barShown();
+    await bp.locator('#eval-on').uncheck();
+    check(who, !before && on && !(await barShown()), 'with two players, the row below the board turns the evaluation bar on and off', `${before} ${on} ${await barShown()}`);
     await bp.close();
 
     // Without the WebAssembly engine (blocked here), the bot still plays, with bot.js
@@ -1040,6 +1059,7 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await fd.locator('[data-preset="5+3"]').click();
   await fd.locator('input[name=fr-side][value=w]').check();
   await fd.locator('#fr-listed').check();
+  await fd.locator('#fr-eval').check();
   await fd.getByRole('button', { name: 'Make the link' }).click();
   await host.waitForURL(/\/hex\?g=/);
   await host.locator('#ob-link-row:not([hidden])').waitFor();
@@ -1056,7 +1076,7 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await viewer.locator('#live-games').click();
   const open = viewer.locator(`#lobby[open] #lobby-open li[data-id="${id}"]`);
   await open.waitFor();
-  check(who, (await open.innerText()).replace(/\s+/g, ' ').trim() === 'Guest Hexagonal · You’d play Black · 5+3 each Play', 'Live games says it’s hexagonal chess', (await open.innerText()).replace(/\s+/g, ' '));
+  check(who, (await open.innerText()).replace(/\s+/g, ' ').trim() === 'Guest Hexagonal · You’d play Black · 5+3 each · evaluation bar Play', 'Live games says it’s hexagonal chess, with the evaluation bar', (await open.innerText()).replace(/\s+/g, ' '));
   await viewer.locator('#lobby-close').click();
 
   // The link as the chess page would give it: it goes to the hex page, with the invitation
@@ -1088,11 +1108,15 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await viewer.locator('#live-games').click();
   const live = viewer.locator(`#lobby[open] #lobby-live li[data-id="${id}"]`);
   await live.waitFor();
-  check(who, /^Guest vs Guest Hexagonal · 5\+3 each · 2 moves, White to move Watch$/.test((await live.innerText()).replace(/\s+/g, ' ').trim()), 'it’s listed as being played', (await live.innerText()).replace(/\s+/g, ' '));
+  check(who, /^Guest vs Guest Hexagonal · 5\+3 each · 2 moves, White to move · evaluation bar Watch$/.test((await live.innerText()).replace(/\s+/g, ' ').trim()), 'it’s listed as being played', (await live.innerText()).replace(/\s+/g, ' '));
   await live.getByRole('button', { name: 'Watch' }).click();
   await viewer.waitForURL(/\/hex\?g=/);
   await viewer.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
   check(who, (await status(viewer)) === 'White to move.' && await viewer.locator('#ob-resign').isHidden(), 'and can be watched, with nothing to play');
+  // Its maker chose the evaluation bar: both players see it, and so does the watcher (not a
+  // setting of their own: the row below the board is hidden in a game against a person)
+  const bars = await Promise.all([host, guest, viewer].map(p => p.evaluate(() => `${!document.getElementById('evalbar').hidden}/${document.getElementById('eval-row').hidden}`)));
+  check(who, bars.join(' ') === 'true/true true/true true/true', 'the evaluation bar the maker chose shows to both players and the watcher', bars.join(' '));
 
   // Black resigns: everyone sees it
   await guest.locator('#ob-resign').click();
@@ -1125,8 +1149,8 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   const rd = guest.locator('#friend-dialog[open]');
   await rd.waitFor();
   const filled = await rd.evaluate(b => [b.querySelector('h2').textContent, b.querySelector('input[name=fr-variant]:checked').value, b.querySelector('input[name=fr-side]:checked').value,
-    b.querySelector('#fr-w-min').value, b.querySelector('#fr-w-inc').value, b.querySelector('.fr-listed').hidden].join(' '));
-  check(who, filled === 'Rematch hex w 5 3 true', 'Rematch… opens the box filled in from the last game: sides swapped, no Live games', filled);
+    b.querySelector('#fr-w-min').value, b.querySelector('#fr-w-inc').value, b.querySelector('.fr-listed').hidden, b.querySelector('#fr-eval').checked].join(' '));
+  check(who, filled === 'Rematch hex w 5 3 true true', 'Rematch… opens the box filled in from the last game: sides swapped, the evaluation bar kept, no Live games', filled);
   await rd.locator('input[name=fr-variant][value=chess]').check();
   await rd.locator('[data-preset="3+2"]').click();
   await rd.getByRole('button', { name: 'Offer the rematch' }).click();
@@ -1147,6 +1171,8 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await guest.waitForFunction(() => document.getElementById('status').textContent === 'Your move.');
   check(who, new URL(host.url()).searchParams.get('g') === new URL(guest.url()).searchParams.get('g') && (await status(host)) === 'Your friend’s move.'
     && (await host.locator('#bottom-player .clock').innerText()) === '3:00', 'accepting takes both into the same new game: chess, the host Black, 3+2', `${await status(host)} ${host.url()}`);
+  const chessBars = await Promise.all([host, guest].map(p => p.evaluate(() => !document.getElementById('evalbar').hidden)));
+  check(who, chessBars.every(Boolean), 'the rematch kept the evaluation bar: both see it on the chess page', JSON.stringify(chessBars));
 
   // Declined: the guest calls that one off before a move, the host offers again from it, and the
   // guest declines from the card

@@ -23,7 +23,7 @@
   --bar: 0px;              /* room for the evaluation bar beside the board while reviewing */
   color-scheme: dark;
 }
-body.reviewing { --bar: 22px; }
+body.reviewing, body.eval-on { --bar: 22px; }   /* the evaluation bar beside the board: in a review, or while playing */
 
 * { box-sizing: border-box; }
 html, body { margin: 0; }
