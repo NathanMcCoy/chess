@@ -6,6 +6,10 @@
 //   choose(where, n, ms) -> the length of the answer (read it at out()): the game as text, "<start
 //     position>\n<moves, space-separated>", answered "<move> <score> <depth> <positions>", "none" if
 //     the game is over, or "error <why>"
+//   analyse(where, n, ms, count) -> the length of the answer, for the game review: the same game text
+//     as choose(), answered with the best `count` lines, one per line of text, each "<score> <depth>
+//     <move> <move> ..." (score as choose's, for the side to move), each searched for ms; "none" if
+//     the game is over, or "error <why>"
 //   set_net(where, n, acc, hidden) -> 1, or 0 if n f32 numbers aren't a network of that size (nn.rs's
 //     order): from then on it judges by the network instead of the weights. set_net(0, 0, 0, 0): back
 //     to the weights
@@ -117,21 +121,51 @@ pub unsafe extern "C" fn choose(p: *const u8, n: usize, ms: f64) -> usize {
     })
 }
 
-fn answer(e: &mut Engine, text: &str, ms: f64) -> String {
+// The game's position now, with every position before it noted (a repeat counts as a draw)
+fn position(e: &mut Engine, text: &str) -> Result<Pos, String> {
     let mut parts = text.splitn(2, '\n');
     let start = parts.next().unwrap_or("");
     let moves = parts.next().unwrap_or("");
     let r = e.rules;
-    let Some(mut p) = r.parse(start) else { return "error not a position".into() };
+    let Some(mut p) = r.parse(start) else { return Err("error not a position".into()) };
     e.searcher.seen.clear();
     e.searcher.seen.insert(p.hash);
     let (mut list, mut scratch) = (Vec::new(), Vec::new());
     for t in moves.split_whitespace() {
         r.legal(&p, &mut list, &mut scratch);
-        let Some(m) = list.iter().find(|m| r.move_text(m) == t) else { return format!("error not a legal move: {t}") };
+        let Some(m) = list.iter().find(|m| r.move_text(m) == t) else { return Err(format!("error not a legal move: {t}")) };
         p = r.play(&p, m);
         e.searcher.seen.insert(p.hash);
     }
+    Ok(p)
+}
+
+/// # Safety
+/// `p` must point to `n` bytes of UTF-8.
+#[unsafe(no_mangle)]
+pub unsafe extern "C" fn analyse(p: *const u8, n: usize, ms: f64, count: usize) -> usize {
+    let text = String::from_utf8_lossy(unsafe { std::slice::from_raw_parts(p, n) }).into_owned();
+    with(|e| {
+        let answer = match position(e, &text) {
+            Err(why) => why,
+            Ok(pos) => {
+                let lines = e.searcher.lines(&pos, count.max(1), ms, clock);
+                if lines.is_empty() { "none".into() } else {
+                    lines.iter().map(|l| {
+                        let moves: Vec<String> = l.moves.iter().map(|m| e.rules.move_text(m)).collect();
+                        format!("{} {} {}", l.score, l.depth, moves.join(" "))
+                    }).collect::<Vec<_>>().join("\n")
+                }
+            }
+        };
+        e.out = answer.into_bytes();
+        e.out.len()
+    })
+}
+
+fn answer(e: &mut Engine, text: &str, ms: f64) -> String {
+    let p = match position(e, text) { Ok(p) => p, Err(why) => return why };
+    let r = e.rules;
     let c = e.searcher.choose_timed(&p, ms, clock);
     match c.mv {
         Some(m) => format!("{} {} {} {}", r.move_text(&m), c.score, c.depth, c.nodes),

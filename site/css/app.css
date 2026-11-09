@@ -384,7 +384,7 @@ body.reviewing .actions, body.reviewing .hint { display: none; }
 .variant-link:hover { text-decoration: underline; }
 .hexboard {
   position: relative; aspect-ratio: 19 / 21.2;
-  width: min(calc(100vw - 32px), calc((100vh - 150px) * 19 / 21.2), 680px);
+  width: calc(min(calc(100vw - 32px), calc((100vh - 150px) * 19 / 21.2), 680px) - var(--bar));
   touch-action: none; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none;
 }
 .hex-svg { position: absolute; inset: 0; width: 100%; height: 100%; display: block; }
@@ -412,10 +412,11 @@ body.reviewing .actions, body.reviewing .hint { display: none; }
 .hex-label { fill: var(--muted); font: 700 0.62px system-ui, sans-serif; text-anchor: middle; dominant-baseline: middle; }
 .hex-page .player.to-move .name::after { content: " · to move"; color: var(--accent); font-weight: 600; }
 .hex-page .actions #undo, .hex-page .actions #flip { grid-column: auto; }
+body.reviewing #auto-turn-row, body.reviewing #bot-row, body.reviewing .hex-rules { display: none; }
 .hex-rules { color: var(--muted); font-size: 0.88rem; }
 .hex-rules summary { cursor: pointer; color: var(--text); }
 .hex-rules ul { margin: 6px 0 0; padding-left: 1.2em; display: grid; gap: 4px; }
 .other-variant a { color: var(--accent); }
 @media (max-width: 760px) {
-  .hexboard { width: min(calc(100vw - 32px), 680px); }
+  .hexboard { width: calc(min(calc(100vw - 32px), 680px) - var(--bar)); }
 }

@@ -1,7 +1,28 @@
 // The review's arithmetic (site/js/review.js), no browser: node --test tests/
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { winChance, whiteChance, rate, accuracy, moveAccuracy, evalText } from '../site/js/review.js';
+import { winChance, whiteChance, rate, accuracy, moveAccuracy, evalText, fromPawns, HEX_K, CHESS_K } from '../site/js/review.js';
+
+test('hex: the bot’s pawn scores and mates, in the review’s units', () => {
+  assert.deepEqual(fromPawns(1.234), { cp: 123 });
+  assert.deepEqual(fromPawns(-0.5), { cp: -50 });
+  assert.deepEqual(fromPawns(999), { mate: 1 });     // mate in one ply: one move
+  assert.deepEqual(fromPawns(997), { mate: 2 });     // three plies: two moves
+  assert.deepEqual(fromPawns(-998), { mate: -1 });   // mated after two plies: one move of theirs
+  assert.deepEqual(fromPawns(-1000), { mate: -0 });  // mated now
+  assert.equal(winChance(fromPawns(-1000), HEX_K), 0);
+  assert.equal(evalText(fromPawns(999), 'b'), '−M1');
+});
+
+test('hex: its own, flatter curve (+1 pawn about 57%), and chess’s is unchanged', () => {
+  assert.equal(Math.round(winChance({ cp: 100 }, HEX_K)), 57);
+  assert.equal(Math.round(winChance({ cp: 300 }, HEX_K)), 69);
+  assert.equal(winChance({ cp: 100 }), winChance({ cp: 100 }, CHESS_K));
+  assert.equal(Math.round(winChance({ cp: 100 })), 59);
+  // The same move rates more gently on hex's curve: a pawn and a half thrown away
+  const before = { score: { cp: 50 }, turn: 'w', best: 'a' }, after = { score: { cp: 100 }, turn: 'b' };
+  assert.ok(rate(before, after, 'b', 2, HEX_K).loss < rate(before, after, 'b').loss);
+});
 
 const near = (a, b, d = 0.5) => assert.ok(Math.abs(a - b) <= d, `${a} is not within ${d} of ${b}`);
 

@@ -73,6 +73,31 @@ test('it is much faster than bot.js (which does about 50 thousand positions a se
   assert.ok(r.nodes > 200000, `${r.nodes} positions`);
 });
 
+// The game review's top lines (search.rs lines(): the best move, then the best of the rest, ...)
+test('analyse: the best lines, each a legal line of play, best first', () => {
+  const mate = engine.analyse(position({ a6: 'k', a1: 'K', b4: 'Q' }), [], 200, 3);
+  assert.equal(mate[0].pv[0], 'b4c6');
+  assert.equal(mate[0].score, 999, 'mate in one: MATE less one ply');
+  const moves = ['f5f6', 'e7e6', 'c2c4'];
+  const lines = engine.analyse(hex.start(), moves, 150, 3);
+  assert.equal(lines.length, 3);
+  assert.equal(new Set(lines.map(l => l.pv[0])).size, 3, `three different first moves: ${lines.map(l => l.pv[0])}`);
+  for (let i = 1; i < 3; i++) assert.ok(lines[i].score <= lines[i - 1].score + 0.3, `best first: ${lines.map(l => l.score)}`);
+  for (const l of lines) {
+    assert.ok(l.depth >= 2 && l.pv.length >= 2, JSON.stringify(l));
+    const r = hex.replay(hex.start(), [...moves, ...l.pv]);
+    assert.ok(!r.error, `${l.pv.join(' ')}: ${r.error}`);
+  }
+  // Only two legal moves: two lines, however many were asked for
+  const few = engine.analyse(position({ a6: 'k', l1: 'K', c4: 'R', d4: 'R' }), [], 50, 5);
+  assert.ok(few.length >= 1 && few.length <= 5);
+  assert.deepEqual(engine.analyse(position({ a6: 'k', a1: 'K', b4: 'Q' }), ['b4c6'], 50, 3), []);
+  assert.throws(() => engine.analyse(hex.start(), ['f5f9'], 50), /not a legal move/);
+  // Asking for lines leaves the bot's own choice as it was: its first line is the move it plays
+  const a = engine.analyse(hex.start(), moves, 300, 1)[0];
+  assert.ok(hex.legal(hex.replay(hex.start(), moves).states.at(-1)).includes(a.pv[0]));
+});
+
 // The neural network (tools/build-net.mjs makes the file; nn.test.mjs checks the same Rust natively)
 test('with a network it judges as PyTorch did (the tiny network in tests/data)', () => {
   const small = JSON.parse(file('data/nn-small.json'));
