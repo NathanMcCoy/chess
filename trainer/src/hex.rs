@@ -47,6 +47,29 @@ pub struct Geometry {
     // side on each cell, where an enemy pawn would stop it being passed
     pub near: Vec<Vec<u8>>,
     pub front: [Vec<Vec<u8>>; 2],
+    // Bitboards (bit i = cell i): every cell along each line from each cell, for rooks (edges) and
+    // bishops (corners). Cells are numbered file by file, so along any line the numbers only rise
+    // (up) or only fall: the first piece along a line is then the lowest or highest bit of
+    // (line & occupied), one instruction, and its cells in order are its bits in that order.
+    pub edge_ray: [[u128; CELLS]; 6],
+    pub corner_ray: [[u128; CELLS]; 6],
+    pub edge_up: [bool; 6],
+    pub corner_up: [bool; 6],
+    // Every cell a knight, or a king, or each side's pawn could capture on from each cell: a quick
+    // test that there's nothing to take before trying each direction in turn
+    pub knight_mask: [u128; CELLS],
+    pub king_mask: [u128; CELLS],
+    pub pawn_mask: [[u128; CELLS]; 2],
+}
+
+// The first piece along a line from `blockers` (line & occupied, not 0): the lowest bit when the
+// line's cells rise, else the highest
+#[inline] pub fn nearest(blockers: u128, up: bool) -> usize {
+    if up { blockers.trailing_zeros() as usize } else { 127 - blockers.leading_zeros() as usize }
+}
+// The line's cells before cell b (those a piece can move through to reach b)
+#[inline] pub fn before(ray: u128, b: usize, up: bool) -> u128 {
+    if up { ray & ((1u128 << b) - 1) } else { ray & (u128::MAX << (b + 1)) }
 }
 
 // What the bot judges besides where each piece stands, in the order of hex.js's EXTRAS
@@ -69,6 +92,8 @@ impl Geometry {
             pawn_captures: [[[-1; CELLS]; 2]; 2], pawn_from: [[[-1; CELLS]; 2]; 2],
             pawn_start: [[false; CELLS]; 2], last: [[false; CELLS]; 2], start: [0; CELLS],
             near: Vec::new(), front: [Vec::new(), Vec::new()],
+            edge_ray: [[0; CELLS]; 6], corner_ray: [[0; CELLS]; 6], edge_up: [false; 6], corner_up: [false; 6],
+            knight_mask: [0; CELLS], king_mask: [0; CELLS], pawn_mask: [[0; CELLS]; 2],
         };
         let mut n = 0;
         for q in -RADIUS..=RADIUS {
@@ -102,6 +127,31 @@ impl Geometry {
                     g.pawn_from[s][c][i] = at(&g, q - CAPTURES[s][c].0, r - CAPTURES[s][c].1);
                 }
             }
+        }
+        // The lines as bitboards, and which way each one's cell numbers run (checked: every step of
+        // every line must go the same way, or the bitboard search would be wrong)
+        for (rays, ups, steps) in [(&mut g.edge_ray, &mut g.edge_up, &g.edges), (&mut g.corner_ray, &mut g.corner_up, &g.corners)] {
+            for d in 0..6 {
+                let mut way: Option<bool> = None;
+                for i in 0..CELLS {
+                    let (mut j, mut last) = (steps[d][i], i as i16);
+                    while j >= 0 {
+                        rays[d][i] |= 1u128 << j;
+                        let up = j > last;
+                        assert!(way.is_none_or(|w| w == up), "a line whose cell numbers don't run one way");
+                        way = Some(up);
+                        last = j;
+                        j = steps[d][j as usize];
+                    }
+                }
+                ups[d] = way.expect("a direction with no steps");
+            }
+        }
+        let bit = |j: i16| if j >= 0 { 1u128 << j } else { 0 };
+        for i in 0..CELLS {
+            for d in 0..12 { g.knight_mask[i] |= bit(g.knight[d][i]); }
+            for d in 0..6 { g.king_mask[i] |= bit(g.edges[d][i]) | bit(g.corners[d][i]); }
+            for s in 0..2 { for c in 0..2 { g.pawn_mask[s][i] |= bit(g.pawn_captures[s][c][i]); } }
         }
         // Black's side: the same file, the rank counted from the other end
         for i in 0..CELLS {
@@ -172,6 +222,7 @@ pub struct Pos {
     pub kings: [i16; 2],
     pub majors: u8,   // pawns, rooks and queens on the board (both sides): kept up as pieces go,
     pub minors: u8,   // and knights and bishops, so drawn() needn't count them every time
+    pub occ: [u128; 2], // each side's pieces as a bitboard (bit i = cell i), kept up as they move
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -209,9 +260,10 @@ impl Rules {
     pub fn from_board(&self, board: [u8; CELLS], turn: u8) -> Pos { self.make(board, turn, -1, 0, 1) }
 
     fn make(&self, board: [u8; CELLS], turn: u8, ep: i16, half: u16, full: u16) -> Pos {
-        let mut p = Pos { board, turn, ep, half, full, hash: 0, kings: [-1, -1], majors: 0, minors: 0 };
+        let mut p = Pos { board, turn, ep, half, full, hash: 0, kings: [-1, -1], majors: 0, minors: 0, occ: [0, 0] };
         p.hash = self.hash_of(&p);
         for i in 0..CELLS {
+            if board[i] != 0 { p.occ[side(board[i]) as usize] |= 1u128 << i; }
             match kind(board[i]) {
                 0 => {}
                 KING => p.kings[side(board[i]) as usize] = i as i16,
@@ -230,29 +282,35 @@ impl Rules {
     }
 
     // Is cell i attacked by side `by`?
-    pub fn attacked(&self, board: &[u8; CELLS], i: usize, by: u8) -> bool {
+    // (board: the pieces; occ: every occupied cell, as a bitboard; the lines are found with it)
+    pub fn attacked(&self, board: &[u8; CELLS], occ: u128, i: usize, by: u8) -> bool {
         let g = &self.g;
-        let mine = |j: i16, kinds: &[u8]| j >= 0 && { let p = board[j as usize]; p != 0 && side(p) == by && kinds.contains(&kind(p)) };
+        let is = |j: i16, piece: u8| j >= 0 && board[j as usize] == piece | (by << 3);
+        let (knight, pawn) = (KNIGHT | (by << 3), PAWN | (by << 3));
         for d in 0..6 {
-            let n = g.edges[d][i];
-            if mine(n, &[KING]) { return true; }
-            let mut j = n;
-            while j >= 0 { let p = board[j as usize]; if p != 0 { if side(p) == by && (kind(p) == ROOK || kind(p) == QUEEN) { return true; } break; } j = g.edges[d][j as usize]; }
+            let blockers = g.edge_ray[d][i] & occ;
+            if blockers != 0 {
+                let p = board[nearest(blockers, g.edge_up[d])];
+                if side(p) == by && (kind(p) == ROOK || kind(p) == QUEEN) { return true; }
+            }
+            if is(g.edges[d][i], KING) { return true; }
         }
         for d in 0..6 {
-            let n = g.corners[d][i];
-            if mine(n, &[KING]) { return true; }
-            let mut j = n;
-            while j >= 0 { let p = board[j as usize]; if p != 0 { if side(p) == by && (kind(p) == BISHOP || kind(p) == QUEEN) { return true; } break; } j = g.corners[d][j as usize]; }
+            let blockers = g.corner_ray[d][i] & occ;
+            if blockers != 0 {
+                let p = board[nearest(blockers, g.corner_up[d])];
+                if side(p) == by && (kind(p) == BISHOP || kind(p) == QUEEN) { return true; }
+            }
+            if is(g.corners[d][i], KING) { return true; }
         }
-        for d in 0..12 { if mine(g.knight[d][i], &[KNIGHT]) { return true; } }
-        for c in 0..2 { if mine(g.pawn_from[by as usize][c][i], &[PAWN]) { return true; } }
+        for d in 0..12 { let j = g.knight[d][i]; if j >= 0 && board[j as usize] == knight { return true; } }
+        for c in 0..2 { let j = g.pawn_from[by as usize][c][i]; if j >= 0 && board[j as usize] == pawn { return true; } }
         false
     }
 
     pub fn in_check(&self, p: &Pos) -> bool {
         let k = p.kings[p.turn as usize];
-        k >= 0 && self.attacked(&p.board, k as usize, p.turn ^ 1)
+        k >= 0 && self.attacked(&p.board, p.occ[0] | p.occ[1], k as usize, p.turn ^ 1)
     }
 
     // Every move that follows the pieces' rules (the king may still be left in check), in the same
@@ -266,19 +324,26 @@ impl Rules {
             let captured = if ep { PAWN } else { kind(b[to]) };
             out.push(Move { from: from as u8, to: to as u8, promo, captured, en_passant: ep, double });
         };
-        for i in 0..CELLS {
-            let pc = b[i];
-            if pc == 0 || side(pc) != turn { continue; }
-            let k = kind(pc);
-            let slide = |out: &mut Vec<Move>, table: &[[i16; CELLS]]| {
-                for dir in table {
-                    let mut j = dir[i];
-                    while j >= 0 {
-                        let t = b[j as usize];
-                        if t == 0 { add(out, i, j as usize, 0, false, -1); j = dir[j as usize]; continue; }
-                        if side(t) != turn { add(out, i, j as usize, 0, false, -1); }
-                        break;
+        let occ = p.occ[0] | p.occ[1];
+        // Each of our pieces, lowest cell first (the order a scan of the cells would find them)
+        let mut own = p.occ[turn as usize];
+        while own != 0 {
+            let i = own.trailing_zeros() as usize;
+            own &= own - 1;
+            let k = kind(b[i]);
+            // Along each line: the empty cells up to the first piece, in order, then that piece if theirs
+            let slide = |out: &mut Vec<Move>, rays: &[[u128; CELLS]; 6], ups: &[bool; 6]| {
+                for d in 0..6 {
+                    let ray = rays[d][i];
+                    let blockers = ray & occ;
+                    let hit = if blockers == 0 { None } else { Some(nearest(blockers, ups[d])) };
+                    let mut free = match hit { None => ray, Some(h) => before(ray, h, ups[d]) };
+                    while free != 0 {
+                        let j = nearest(free, ups[d]);
+                        add(out, i, j, 0, false, -1);
+                        free &= !(1u128 << j);
                     }
+                    if let Some(h) = hit { if side(b[h]) != turn { add(out, i, h, 0, false, -1); } }
                 }
             };
             let leap = |out: &mut Vec<Move>, table: &[[i16; CELLS]]| {
@@ -288,9 +353,9 @@ impl Rules {
                 }
             };
             match k {
-                ROOK => slide(out, &g.edges),
-                BISHOP => slide(out, &g.corners),
-                QUEEN => { slide(out, &g.edges); slide(out, &g.corners); }
+                ROOK => slide(out, &g.edge_ray, &g.edge_up),
+                BISHOP => slide(out, &g.corner_ray, &g.corner_up),
+                QUEEN => { slide(out, &g.edge_ray, &g.edge_up); slide(out, &g.corner_ray, &g.corner_up); }
                 KING => { leap(out, &g.edges); leap(out, &g.corners); }
                 KNIGHT => leap(out, &g.knight),
                 _ => {
@@ -327,12 +392,16 @@ impl Rules {
         let mut h = p.hash ^ k.piece[piece as usize][from];
         if n.board[to] != 0 { h ^= k.piece[n.board[to] as usize][to]; }
         h ^= k.piece[placed as usize][to];
+        let (me, them) = (p.turn as usize, (p.turn ^ 1) as usize);
+        n.occ[me] = (n.occ[me] & !(1u128 << from)) | (1u128 << to);
+        n.occ[them] &= !(1u128 << to);
         n.board[to] = placed;
         n.board[from] = 0;
         if m.en_passant {
             let gone = self.g.pawn_back[p.turn as usize][to] as usize;
             h ^= k.piece[n.board[gone] as usize][gone];
             n.board[gone] = 0;
+            n.occ[them] &= !(1u128 << gone);
         }
         if kind(piece) == KING { n.kings[p.turn as usize] = to as i16; }
         match m.captured {
@@ -363,10 +432,15 @@ impl Rules {
         let k = if king == m.from as i16 { m.to as i16 } else { king };
         if k < 0 { return true; }
         let mut b = p.board;
+        let mut occ = ((p.occ[0] | p.occ[1]) & !(1u128 << m.from)) | (1u128 << m.to);
         b[m.to as usize] = if m.promo != 0 { m.promo | (p.turn << 3) } else { b[m.from as usize] };
         b[m.from as usize] = 0;
-        if m.en_passant { b[self.g.pawn_back[p.turn as usize][m.to as usize] as usize] = 0; }
-        !self.attacked(&b, k as usize, p.turn ^ 1)
+        if m.en_passant {
+            let gone = self.g.pawn_back[p.turn as usize][m.to as usize] as usize;
+            b[gone] = 0;
+            occ &= !(1u128 << gone);
+        }
+        !self.attacked(&b, occ, k as usize, p.turn ^ 1)
     }
 
     // What's needed to tell which moves are legal without testing each: is the king in check, and
@@ -377,25 +451,21 @@ impl Rules {
         let king = p.kings[p.turn as usize];
         if king < 0 { return (false, 0); }
         let k = king as usize;
-        let check = self.attacked(&p.board, k, p.turn ^ 1);
+        let occ = p.occ[0] | p.occ[1];
+        let check = self.attacked(&p.board, occ, k, p.turn ^ 1);
         let mut pinned: u128 = 0;
-        for (table, a, b) in [(&self.g.edges, ROOK, QUEEN), (&self.g.corners, BISHOP, QUEEN)] {
-            for dir in table.iter() {
-                let mut j = dir[k];
-                let mut own = -1i16;
-                while j >= 0 {
-                    let pc = p.board[j as usize];
-                    if pc != 0 {
-                        if side(pc) == p.turn {
-                            if own >= 0 { break; }   // two of ours: no pin on this line
-                            own = j;
-                        } else {
-                            if own >= 0 && (kind(pc) == a || kind(pc) == b) { pinned |= 1u128 << own; }
-                            break;
-                        }
-                    }
-                    j = dir[j as usize];
-                }
+        // Along each line from the king: the first piece ours, and the next one theirs and moving
+        // along such lines, pins it
+        for (rays, ups, a) in [(&self.g.edge_ray, &self.g.edge_up, ROOK), (&self.g.corner_ray, &self.g.corner_up, BISHOP)] {
+            for d in 0..6 {
+                let blockers = rays[d][k] & occ;
+                if blockers == 0 { continue; }
+                let first = nearest(blockers, ups[d]);
+                if p.occ[p.turn as usize] & (1u128 << first) == 0 { continue; }
+                let rest = blockers & !(1u128 << first);
+                if rest == 0 { continue; }
+                let pc = p.board[nearest(rest, ups[d])];
+                if side(pc) != p.turn && (kind(pc) == a || kind(pc) == QUEEN) { pinned |= 1u128 << first; }
             }
         }
         (check, pinned)
@@ -435,9 +505,11 @@ impl Rules {
         let b = &p.board;
         let s = p.turn as usize;
         let empty = |j: i16| j >= 0 && b[j as usize] == 0;
-        for i in 0..CELLS {
+        let mut own = p.occ[s] & !pinned;
+        while own != 0 {
+            let i = own.trailing_zeros() as usize;
+            own &= own - 1;
             let pc = b[i];
-            if pc == 0 || side(pc) != p.turn || pinned & (1u128 << i) != 0 { continue; }
             let found = match kind(pc) {
                 ROOK => (0..6).any(|d| empty(g.edges[d][i])),
                 BISHOP => (0..6).any(|d| empty(g.corners[d][i])),
@@ -461,18 +533,20 @@ impl Rules {
             let captured = if ep { PAWN } else { kind(b[to]) };
             out.push(Move { from: from as u8, to: to as u8, promo, captured, en_passant: ep, double: -1 });
         };
-        for i in 0..CELLS {
+        let occ = p.occ[0] | p.occ[1];
+        let theirs = p.occ[(turn ^ 1) as usize];
+        let mut own = p.occ[turn as usize];
+        while own != 0 {
+            let i = own.trailing_zeros() as usize;
+            own &= own - 1;
             let pc = b[i];
-            if pc == 0 || side(pc) != turn { continue; }
-            let slide = |out: &mut Vec<Move>, table: &[[i16; CELLS]]| {
-                for dir in table {
-                    let mut j = dir[i];
-                    while j >= 0 {
-                        let t = b[j as usize];
-                        if t == 0 { j = dir[j as usize]; continue; }
-                        if side(t) != turn { add(out, i, j as usize, 0, false); }
-                        break;
-                    }
+            // Along each line, only the first piece matters: a capture if it's theirs
+            let slide = |out: &mut Vec<Move>, rays: &[[u128; CELLS]; 6], ups: &[bool; 6]| {
+                for d in 0..6 {
+                    let blockers = rays[d][i] & occ;
+                    if blockers == 0 { continue; }
+                    let h = nearest(blockers, ups[d]);
+                    if theirs & (1u128 << h) != 0 { add(out, i, h, 0, false); }
                 }
             };
             let leap = |out: &mut Vec<Move>, table: &[[i16; CELLS]]| {
@@ -482,11 +556,11 @@ impl Rules {
                 }
             };
             match kind(pc) {
-                ROOK => slide(out, &g.edges),
-                BISHOP => slide(out, &g.corners),
-                QUEEN => { slide(out, &g.edges); slide(out, &g.corners); }
-                KING => { leap(out, &g.edges); leap(out, &g.corners); }
-                KNIGHT => leap(out, &g.knight),
+                ROOK => slide(out, &g.edge_ray, &g.edge_up),
+                BISHOP => slide(out, &g.corner_ray, &g.corner_up),
+                QUEEN => { slide(out, &g.edge_ray, &g.edge_up); slide(out, &g.corner_ray, &g.corner_up); }
+                KING => if g.king_mask[i] & theirs != 0 { leap(out, &g.edges); leap(out, &g.corners); },
+                KNIGHT => if g.knight_mask[i] & theirs != 0 { leap(out, &g.knight) },
                 _ => {
                     let s = turn as usize;
                     let promote = |out: &mut Vec<Move>, j: usize| { for promo in [QUEEN, ROOK, BISHOP, KNIGHT] { add(out, i, j, promo, false); } };
