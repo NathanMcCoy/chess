@@ -1105,22 +1105,70 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   check(who, (await card(viewer)) === 'White wins | Black resigned. | 1–0', 'and the watcher', await card(viewer));
   check(who, (await status(host)) === 'You win! Your opponent resigned.', 'the status line says it without a stray full stop', await status(host));
 
-  // New game on the result card leaves the game for a new one on this device (it was missing online)
-  await guest.locator('#go-new').click();
-  await guest.locator('#online-box').waitFor({ state: 'hidden' });
-  check(who, new URL(guest.url()).pathname === '/hex' && !new URL(guest.url()).search && (await hexMoves(guest)).length === 0 && (await status(guest)) === 'New game started. White to move.',
-    'New game on the result card leaves the game, for a new one here', `${guest.url()} ${await status(guest)}`);
+  // On the result card, the players' New game is Rematch…; a watcher's is still New game
+  const labels = await Promise.all([host, guest, viewer].map(p => p.locator('#go-new').innerText()));
+  check(who, labels.join(' | ') === 'Rematch… | Rematch… | New game', 'the players get Rematch… on the result card, a watcher New game', labels.join(' | '));
 
-  // Back to your own game here
-  await host.locator('#go-close').click();
-  await host.locator('#ob-leave').click();
-  await host.locator('#online-box').waitFor({ state: 'hidden' });
-  check(who, new URL(host.url()).pathname === '/hex' && !new URL(host.url()).search && (await hexMoves(host)).length === 0 && await host.locator('#bottom-player .clock').isHidden(),
-    'leaving goes back to your own game on this device', host.url());
+  // A watcher's New game leaves the game for a new one on this device (it was missing online)
+  await viewer.locator('#go-new').click();
+  await viewer.locator('#online-box').waitFor({ state: 'hidden' });
+  check(who, new URL(viewer.url()).pathname === '/hex' && !new URL(viewer.url()).search && (await hexMoves(viewer)).length === 0 && (await status(viewer)) === 'New game started. White to move.'
+    && await viewer.locator('#bottom-player .clock').isHidden(), 'New game on the result card leaves the game, for a new one here', `${viewer.url()} ${await status(viewer)}`);
   // Then New game, on that empty board: it must still show it did something (it changed nothing
   // on screen, so it seemed not to work: found by the user on Nov 7)
-  await host.locator('#new-game').click();
-  check(who, (await status(host)) === 'New game started. White to move.', 'New game on an empty board still says it started one', await status(host));
+  await viewer.locator('#new-game').click();
+  check(who, (await status(viewer)) === 'New game started. White to move.', 'New game on an empty board still says it started one', await status(viewer));
+
+  // A rematch, offered by the guest (Black): the box comes filled in from the last game (hex, they'd
+  // play White, 5+3, no Live games), and they change it to square chess at 3+2
+  await guest.locator('#go-new').click();
+  const rd = guest.locator('#friend-dialog[open]');
+  await rd.waitFor();
+  const filled = await rd.evaluate(b => [b.querySelector('h2').textContent, b.querySelector('input[name=fr-variant]:checked').value, b.querySelector('input[name=fr-side]:checked').value,
+    b.querySelector('#fr-w-min').value, b.querySelector('#fr-w-inc').value, b.querySelector('.fr-listed').hidden].join(' '));
+  check(who, filled === 'Rematch hex w 5 3 true', 'Rematch… opens the box filled in from the last game: sides swapped, no Live games', filled);
+  await rd.locator('input[name=fr-variant][value=chess]').check();
+  await rd.locator('[data-preset="3+2"]').click();
+  await rd.getByRole('button', { name: 'Offer the rematch' }).click();
+  const onChess = u => new URL(u).pathname === '/' && new URL(u).searchParams.has('g');
+  await guest.waitForURL(onChess);
+  await guest.waitForFunction(() => /accept the rematch/.test(document.getElementById('status').textContent));
+  check(who, (await status(guest)) === 'Waiting for your friend to accept the rematch.' && await guest.locator('#ob-link-row').isHidden(),
+    'whoever offers waits in the new game, here square chess on its own page, with no link to send', `${await status(guest)} ${guest.url()}`);
+
+  // The winner, still on the finished hex game, sees the offer at once, and accepts it from the card
+  await host.waitForFunction(() => /offers a rematch/.test(document.getElementById('status').textContent));
+  check(who, (await status(host)) === 'You win! Your opponent resigned. Your opponent offers a rematch: Chess, you’d play Black, 3+2 each.'
+    && (await host.locator('#go-new').innerText()) === 'Accept rematch' && await host.locator('#go-decline').isVisible() && await host.locator('#ob-rematch-accept').isVisible(),
+    'the other player sees the offer, with Accept and Decline', await status(host));
+  await host.locator('#go-new').click();
+  await host.waitForURL(onChess);
+  await host.waitForFunction(() => /move\.$/.test(document.getElementById('status').textContent));
+  await guest.waitForFunction(() => document.getElementById('status').textContent === 'Your move.');
+  check(who, new URL(host.url()).searchParams.get('g') === new URL(guest.url()).searchParams.get('g') && (await status(host)) === 'Your friend’s move.'
+    && (await host.locator('#bottom-player .clock').innerText()) === '3:00', 'accepting takes both into the same new game: chess, the host Black, 3+2', `${await status(host)} ${host.url()}`);
+
+  // Declined: the guest calls that one off before a move, the host offers again from it, and the
+  // guest declines from the card
+  await guest.locator('#ob-abort').click();
+  await guest.locator('#confirm[open]').waitFor();
+  await guest.locator('#confirm-yes').click();
+  for (const p of [host, guest]) await p.locator('#gameover:not([hidden])').waitFor();
+  // The page's last copy of the game came from the live stream, which says nobody is "you" (it goes
+  // to watchers too): Rematch… must still know your side (it once read it from there, and failed)
+  await host.locator('#go-new').click();
+  const sides = await host.locator('#friend-dialog[open]').evaluate(b => b.querySelector('input[name=fr-side]:checked').value);
+  check(who, sides === 'w', 'Rematch… after a game ended by the other player (from the live stream) still swaps sides', sides);
+  await host.locator('#friend-dialog[open]').getByRole('button', { name: 'Offer the rematch' }).click();
+  await host.waitForFunction(() => /accept the rematch/.test(document.getElementById('status').textContent));
+  await guest.waitForFunction(() => /offers a rematch/.test(document.getElementById('status').textContent));
+  await guest.locator('#go-decline').click();
+  await host.waitForFunction(() => /declined the rematch/.test(document.getElementById('status').textContent));
+  await guest.waitForFunction(() => !/offers a rematch/.test(document.getElementById('status').textContent), null, { timeout: 2000 });
+  check(who, (await status(host)) === 'Your friend declined the rematch.' && (await host.locator('#go-new').innerText()) === 'New game…',
+    'declining tells the one who offered, whose card goes back to New game', await status(host));
+  check(who, (await status(guest)) === 'The game was called off.' && await guest.locator('#go-decline').isHidden() && (await guest.locator('#go-new').innerText()) === 'Rematch…',
+    'and the one who declined can still offer one themselves', await status(guest));
   for (const p of [host, guest, viewer]) await p.close();
 }
 
