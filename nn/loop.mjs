@@ -53,7 +53,7 @@ const sizeOf = file => {
   return `${head.match(/"acc": ?(\d+)/)?.[1]}/${head.match(/"hidden": ?(\d+)/)?.[1] ?? 32}`;
 };
 // Positions a second searching with a network (trainer bench --suite)
-const speedOf = file => Number(run(trainer, ['bench', '--net', file, '--nodes', '1', '--suite', '300000']).match(/\((\d+)\/s\)/)[1]);
+const speedOf = file => Number(run(trainer, ['bench', '--net', file, '--nodes', '1', '--suite', '300000']).match(/suite: .*?\((\d+)\/s\)/)[1]);   // the suite's line (the first is a 1-position warm-up)
 
 // The games for a round, in the background: written to round-N.bin.part and renamed when complete,
 // so a run stopped part-way never leaves a half-written file that counts as a round
