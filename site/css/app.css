@@ -400,6 +400,15 @@ body.reviewing .actions, body.reviewing .hint { display: none; }
 .hex-mark.check { fill: rgba(224, 60, 40, 0.8); }
 .hex-dest { fill: var(--dest); }
 .hex-dest.capture { fill: none; stroke: var(--dest); stroke-width: 0.13; }
+/* Arrows and circles over the pieces (as chessground's), in its colours */
+.hex-shapes { position: absolute; inset: 0; width: 100%; height: 100%; display: block; pointer-events: none; z-index: 5; }
+.hex-shapes .brush-green { --b: #15781b; }
+.hex-shapes .brush-red { --b: #882020; }
+.hex-shapes .brush-blue { --b: #003088; }
+.hex-shapes .brush-yellow { --b: #e68f00; }
+.hex-shapes marker path { fill: var(--b); }
+.hex-shape { stroke: var(--b); fill: none; opacity: 0.8; }
+.hex-shape.current { opacity: 0.5; }
 .hex-label { fill: var(--muted); font: 700 0.62px system-ui, sans-serif; text-anchor: middle; dominant-baseline: middle; }
 .hex-page .player.to-move .name::after { content: " · to move"; color: var(--accent); font-weight: 600; }
 .hex-page .actions #undo, .hex-page .actions #flip { grid-column: auto; }
