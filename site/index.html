@@ -158,6 +158,7 @@
         <label class="level">Stockfish level <output id="level-name"></output>
           <input type="range" id="level" name="level" min="1" max="10" step="1" value="3">
         </label>
+        <label class="fr-same"><input type="checkbox" id="nd-eval"> Show the evaluation bar while playing</label>
       </div>
       <p id="nd-hex" class="fr-help" hidden>Stockfish doesn’t play hexagonal chess, so this is a game for two people taking turns on this device. To play someone elsewhere, use Play a friend.</p>
       <div class="row">
@@ -197,6 +198,7 @@
         <label class="fr-same"><input type="checkbox" id="fr-same" checked> The same time for both</label>
       </div>
       <label class="fr-same fr-listed"><input type="checkbox" id="fr-listed"> List it in Live games, so anyone can join</label>
+      <label class="fr-same"><input type="checkbox" id="fr-eval"> Show the evaluation bar (to both of you, and anyone watching)</label>
       <p id="fr-error" class="acc-error" role="alert"></p>
       <div class="row">
         <button type="submit" value="cancel">Cancel</button>

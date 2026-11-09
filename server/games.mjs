@@ -106,6 +106,7 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
     return {
       id: g.id, variant: g.variant, start: g.start, moves: g.moves, status: g.status, result: g.result,
       listed: !!g.listed,   // in Live games (open to anyone), or by link only
+      evalBar: !!g.eval_bar,   // the evaluation bar shown during play, to everyone (the maker's choice)
       drawOffer: g.draw_offer, turn,
       players: Object.fromEntries(COLOURS.map(c => [c, { name: nameOf(g[`${c}_account`]), joined: !!g[`${c}_seat`] || g[`${c}_account`] != null }])),
       times: Object.fromEntries(COLOURS.map(c => [c, { base: g[`${c}_base`], inc: g[`${c}_inc`] }])),
@@ -151,8 +152,9 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
   return {
     get(id, seat, account) { const g = load(id); return view(g, seatOf(g, seat, account)); },
 
-    // listed: shown in Live games, for anyone to join (and, once playing, to watch)
-    create({ variant: variantId = 'chess', color = 'random', times, account = null, listed = false }) {
+    // listed: shown in Live games, for anyone to join (and, once playing, to watch); evalBar: both
+    // players (and watchers) see the evaluation bar during the game
+    create({ variant: variantId = 'chess', color = 'random', times, account = null, listed = false, evalBar = false }) {
       const v = variant(variantId);
       if (!v) throw new GameError(400, 'That isn’t a game this site plays.');
       if (!['w', 'b', 'random'].includes(color)) throw new GameError(400, 'Choose White, Black or random.');
@@ -161,9 +163,9 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
       const id = randomBytes(9).toString('base64url');   // 12 characters: not guessable
       const seat = randomBytes(24).toString('base64url');
       const t = now();
-      db.prepare(`INSERT INTO games (id, variant, start, status, ${side}_seat, ${side}_account, w_base, w_inc, b_base, b_inc, w_left, b_left, created, updated, listed)
-                  VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
-        .run(id, v.id, v.start(), hash(seat), account ? account.id : null, tc.w.base, tc.w.inc, tc.b.base, tc.b.inc, tc.w.base, tc.b.base, t, t, listed ? 1 : 0);
+      db.prepare(`INSERT INTO games (id, variant, start, status, ${side}_seat, ${side}_account, w_base, w_inc, b_base, b_inc, w_left, b_left, created, updated, listed, eval_bar)
+                  VALUES (?, ?, ?, 'waiting', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+        .run(id, v.id, v.start(), hash(seat), account ? account.id : null, tc.w.base, tc.w.inc, tc.b.base, tc.b.inc, tc.w.base, tc.b.base, t, t, listed ? 1 : 0, evalBar ? 1 : 0);
       changed(id);
       return { id, seat, color: side };
     },
@@ -185,7 +187,7 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
     // A rematch, offered by a player of a finished game: a new game (by link only, never listed)
     // with the offerer seated, which only this game's other player may join. Its settings are
     // chosen afresh: game, side and both time controls.
-    rematch(id, seat, account, { variant: variantId, color, times } = {}) {
+    rematch(id, seat, account, { variant: variantId, color, times, evalBar = false } = {}) {
       const g = load(id);
       const c = seatOf(g, seat, account);
       if (!c) throw new GameError(403, 'You’re not playing in this game.');
@@ -198,7 +200,7 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
         }
         if (r.status !== 'aborted') throw new GameError(409, 'The rematch has been played: offer the next one from its own page.');
       }
-      const made = this.create({ variant: variantId, color, times, account, listed: false });
+      const made = this.create({ variant: variantId, color, times, account, listed: false, evalBar });
       db.prepare('UPDATE games SET rematch_of = ?, rematch_by = ? WHERE id = ?').run(g.id, c, made.id);
       save(g, { rematch: made.id });   // both players' pages see the offer
       return { ...made, variant: load(made.id).variant };
@@ -286,12 +288,12 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
       const open = db.prepare("SELECT * FROM games WHERE status = 'waiting' AND listed = 1 AND created > ? ORDER BY created DESC LIMIT 100")
         .all(t - 3_600_000).filter(g => present(g.id)).slice(0, 50).map(g => {
           const maker = g.w_seat || g.w_account != null ? 'w' : 'b';
-          return { id: g.id, variant: g.variant, by: name(g[`${maker}_account`]), side: other(maker), times: times(g), created: g.created };
+          return { id: g.id, variant: g.variant, by: name(g[`${maker}_account`]), side: other(maker), times: times(g), created: g.created, evalBar: !!g.eval_bar };
         });
       const live = db.prepare("SELECT * FROM games WHERE status = 'playing' AND listed = 1 AND updated > ? ORDER BY updated DESC LIMIT 50")
         .all(t - 1_800_000).map(g => {
           const moves = JSON.parse(g.moves);
-          return { id: g.id, variant: g.variant, players: { w: name(g.w_account), b: name(g.b_account) }, times: times(g), moves: moves.length, turn: turnOf({ ...g, moves }) };
+          return { id: g.id, variant: g.variant, players: { w: name(g.w_account), b: name(g.b_account) }, times: times(g), moves: moves.length, turn: turnOf({ ...g, moves }), evalBar: !!g.eval_bar };
         });
       return { open, live, serverNow: t };
     },

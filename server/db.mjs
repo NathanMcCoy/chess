@@ -57,6 +57,8 @@ const STEPS = [
   `ALTER TABLE games ADD COLUMN rematch TEXT;
    ALTER TABLE games ADD COLUMN rematch_of TEXT;
    ALTER TABLE games ADD COLUMN rematch_by TEXT;`,
+  // 5: the evaluation bar shown during the game, to both players and anyone watching (its maker's choice)
+  `ALTER TABLE games ADD COLUMN eval_bar INTEGER NOT NULL DEFAULT 0;`,
 ];
 
 export function openDb(dir) {

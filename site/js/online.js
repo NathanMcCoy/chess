@@ -86,6 +86,7 @@ export function askForGame(variant = 'chess', preset = null) {
     field('fr-w-min').value = t.w.base / 60_000; field('fr-w-inc').value = t.w.inc / 1000;
     field('fr-b-min').value = t.b.base / 60_000; field('fr-b-inc').value = t.b.inc / 1000;
     same.checked = t.w.base === t.b.base && t.w.inc === t.b.inc;
+    $('fr-eval').checked = !!preset.evalBar;
   }
   const sync = () => {
     $('fr-black-row').hidden = same.checked;
@@ -111,6 +112,7 @@ export function askForGame(variant = 'chess', preset = null) {
       resolve({
         variant: box.querySelector('input[name=fr-variant]:checked')?.value || variant,
         listed: !preset && $('fr-listed').checked,
+        evalBar: $('fr-eval').checked,
         color: box.querySelector('input[name=fr-side]:checked').value,
         times: { w: { minutes: num('fr-w-min'), increment: num('fr-w-inc') }, b: { minutes: num('fr-b-min'), increment: num('fr-b-inc') } },
       });
@@ -124,6 +126,8 @@ const bothTimes = t => (timeText(t.w) === timeText(t.b) ? `${timeText(t.w)} each
 const SIDE = { w: 'White', b: 'Black' };
 // Which game it is, before its details: only hexagonal chess says so, as most games are chess
 const kind = g => (g.variant === 'hex' ? 'Hexagonal · ' : '');
+// After them: whether everyone sees the evaluation bar
+const bar = g => (g.evalBar ? ' · evaluation bar' : '');
 // Where a game is played: chess on the main page, hexagonal chess on /hex
 export const gamePath = (id, variant) => `${variant === 'hex' ? '/hex' : '/'}?g=${encodeURIComponent(id)}`;
 
@@ -148,9 +152,9 @@ export function openLobby(onPick) {
     return li;
   };
   const show = ({ open, live }) => {
-    $('lobby-open').replaceChildren(...open.map(g => row(g.id, g.by, `${kind(g)}You’d play ${SIDE[g.side]} · ${bothTimes(g.times)}`, 'Play', () => done(g, 'play'))));
+    $('lobby-open').replaceChildren(...open.map(g => row(g.id, g.by, `${kind(g)}You’d play ${SIDE[g.side]} · ${bothTimes(g.times)}${bar(g)}`, 'Play', () => done(g, 'play'))));
     $('lobby-live').replaceChildren(...live.map(g => row(g.id, `${g.players.w} vs ${g.players.b}`,
-      `${kind(g)}${bothTimes(g.times)} · ${g.moves} move${g.moves === 1 ? '' : 's'}, ${SIDE[g.turn]} to move`, 'Watch', () => done(g, 'watch'))));
+      `${kind(g)}${bothTimes(g.times)} · ${g.moves} move${g.moves === 1 ? '' : 's'}, ${SIDE[g.turn]} to move${bar(g)}`, 'Watch', () => done(g, 'watch'))));
     $('lobby-open-none').hidden = open.length > 0;
     $('lobby-live-none').hidden = live.length > 0;
   };
@@ -194,7 +198,7 @@ const declineRematch = (offer, oldId) => call(`/api/games/${enc(offer.id)}/refus
 // v.you: the live stream's copy of a game says null there, as it goes to everyone watching too.)
 export function rematchPreset(v, you) {
   const them = you === 'w' ? 'b' : 'w';
-  return { rematch: true, variant: v.variant, color: them, times: { [them]: v.times[you], [you]: v.times[them] } };
+  return { rematch: true, variant: v.variant, color: them, times: { [them]: v.times[you], [you]: v.times[them] }, evalBar: !!v.evalBar };
 }
 const gameName = variant => (variant === 'hex' ? 'Hexagonal chess' : 'Chess');
 // "Hexagonal chess, you'd play White, 10+5 each"

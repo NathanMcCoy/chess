@@ -26,6 +26,7 @@ let clockTimer = null;
 let notice = null;          // a one-off message for the status line
 // You against the site's bot: { side: the side you play, level }, or null for two players
 let vsBot = null;
+let evalBar = false;        // the evaluation bar while playing, in your game on this device (Play the bot, or the row below the board)
 const LEVELS = { 1: { name: 'Quick', ms: 250 }, 2: { name: 'Normal', ms: 1000 }, 3: { name: 'Long', ms: 3000 } };
 // The game review (as the chess page's, with the bot in place of Stockfish):
 let review = null;          // { key, positions: [{ score, best, turn, legal }] }: the finished game analysed, saved with it
@@ -42,6 +43,7 @@ function load() {
   orientation = 'w';
   vsBot = null;
   review = null;
+  evalBar = false;
   try {
     const s = JSON.parse(localStorage.getItem(SAVE) || 'null');
     if (!s || s.variant !== 'hex' || typeof s.start !== 'string' || !Array.isArray(s.moves)) return;
@@ -51,12 +53,13 @@ function load() {
     autoTurn = s.autoTurn === true;
     cardClosed = s.cardClosed === true;
     if (s.vsBot && ['w', 'b'].includes(s.vsBot.side) && LEVELS[s.vsBot.level]) vsBot = { side: s.vsBot.side, level: s.vsBot.level };
+    evalBar = s.evalBar === true;
     review = s.review && s.review.key === gameKey() && Array.isArray(s.review.positions) ? s.review : null;
   } catch { /* storage blocked or the save isn't JSON: a new game */ }
 }
 function save() {
   if (online) return;
-  try { localStorage.setItem(SAVE, JSON.stringify({ variant: 'hex', start: game.start, moves: game.moves, orientation, autoTurn, cardClosed, vsBot, review })); } catch { /* storage blocked */ }
+  try { localStorage.setItem(SAVE, JSON.stringify({ variant: 'hex', start: game.start, moves: game.moves, orientation, autoTurn, cardClosed, vsBot, review, evalBar })); } catch { /* storage blocked */ }
 }
 
 // --- Who's who, and how it ended ----------------------------------------------------------------
@@ -480,12 +483,61 @@ function shortName(c) {
 }
 const possessive = c => (shortName(c) === 'You' ? 'Your' : `${shortName(c)}’s`);
 
+// The evaluation bar: White's chances in a position, from a score for the side to move
+// (no score yet: level, with no number)
+function drawBar(score, turn) {
+  const bar = $('evalbar');
+  const white = score ? whiteChance(score, turn, HEX_K) : 50;
+  bar.classList.toggle('flipped', orientation === 'b');
+  bar.classList.toggle('black-ahead', white < 50);
+  bar.querySelector('.fill').style.height = `${white}%`;
+  bar.querySelector('.score').textContent = score ? evalText(score, turn).replace(/^[+−]/, '') : '';
+}
+
+// The evaluation bar while playing (your game's setting; for a game against a person, its maker's
+// choice, for both players): the bot, in a worker of its own, judges the position on the board, one
+// question at a time, always about where the board is now
+const showEval = () => (online ? !!online.view.evalBar : evalBar);
+let evaler = null, evalBusy = false;
+let evalState = { key: null };
+function wantEval(at) {
+  const key = `${gameKey()}#${at}`;
+  if (evalState.key !== key) {
+    const state = played.states[at];
+    evalState = { key, at, turn: hex.turn(state), score: settled(played.states, at, played.result) };
+    if (!evalState.score) askEval();
+  }
+  drawBar(evalState.score, evalState.turn);
+}
+async function askEval() {
+  if (evalBusy) return;   // the loop below asks again, about where the board is now
+  evalBusy = true;
+  evaler ||= reviewWorker();
+  try {
+    for (;;) {
+      const st = evalState;
+      if (!st.key || st.score || !showEval()) break;
+      const r = await evaler.ask({ start: game.start, moves: game.moves.slice(0, st.at), timeMs: 300, count: 1 });
+      if (evalState !== st) continue;
+      if (!r.lines[0]) break;
+      evalState = { ...st, score: fromPawns(r.lines[0].score) };
+      if (!reviewing) drawBar(evalState.score, evalState.turn);
+    }
+  } catch { /* the bot not working: the bar just stays level */ } finally { evalBusy = false; }
+}
+
 function renderReview(at, n) {
   document.body.classList.toggle('reviewing', reviewing);
+  const live = !reviewing && showEval();
+  document.body.classList.toggle('eval-on', live);
   $('review').hidden = !reviewing;
-  $('evalbar').hidden = !reviewing;
+  $('evalbar').hidden = !reviewing && !live;
   $('rv-summary').hidden = !reviewing;
-  if (!reviewing) { board.setAutoShapes([]); return; }
+  if (!reviewing) {
+    board.setAutoShapes([]);
+    if (live) wantEval(at);
+    return;
+  }
   const positions = review ? review.positions : [];
   const total = n + 1;
   const fullMoves = Math.ceil(n / 2);
@@ -500,12 +552,7 @@ function renderReview(at, n) {
 
   // The evaluation bar: White's chances in the position on the board
   const here = positions[at];
-  const bar = $('evalbar');
-  const white = here ? whiteChance(here.score, here.turn, HEX_K) : 50;
-  bar.classList.toggle('flipped', orientation === 'b');
-  bar.classList.toggle('black-ahead', white < 50);
-  bar.querySelector('.fill').style.height = `${white}%`;
-  bar.querySelector('.score').textContent = here ? evalText(here.score, here.turn).replace(/^[+−]/, '') : '';
+  drawBar(here && here.score, here && here.turn);
 
   // The verdict on the move just played, and an arrow for what the bot would have played
   wantLines(at);
@@ -691,6 +738,8 @@ function renderOnline() {
   const box = $('online-box');
   box.hidden = !online;
   $('auto-turn-row').hidden = !!online || !!vsBot;   // against the bot, your side stays at the bottom
+  $('eval-row').hidden = !!online;   // a game against a person has its own setting, its maker's
+  $('eval-on').checked = evalBar;
   if (!online) return;
   const v = online.view, you = online.you, playing = v.status === 'playing';
   $('ob-link-row').hidden = !(you && v.status === 'waiting') || !!v.rematchOf;   // a rematch is for them only: no link to send
@@ -776,6 +825,7 @@ function playBot() {
     form.querySelector(`input[name=bot-side][value="${vsBot.side}"]`).checked = true;
     form.querySelector(`input[name=bot-level][value="${vsBot.level}"]`).checked = true;
   }
+  $('bot-eval').checked = evalBar;
   box.returnValue = '';
   box.addEventListener('close', async () => {
     if (box.returnValue !== 'start') return;
@@ -785,6 +835,7 @@ function playBot() {
     const unfinished = game.moves.length && !hex.replay(game.start, game.moves).result;
     if (unfinished && !(await confirmBox('Start a game against the bot? The game on the board will be lost.', 'Play the bot'))) return;
     vsBot = { side, level };
+    evalBar = $('bot-eval').checked;
     stopBot();
     game = { start: hex.start(), moves: [] };
     viewing = null;
@@ -839,6 +890,7 @@ $('bot-off').onclick = () => {
   render();
 };
 $('flip').onclick = () => { orientation = other(orientation); render(); };
+$('eval-on').onchange = e => { evalBar = e.target.checked; render(); };
 $('auto-turn').onchange = e => {
   autoTurn = e.target.checked;
   if (autoTurn) orientation = hex.turn(played.states.at(-1));
