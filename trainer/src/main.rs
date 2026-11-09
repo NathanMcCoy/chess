@@ -193,9 +193,17 @@ fn perft(rules: &hex::Rules, args: &[String]) {
         lists[depth as usize] = list;
         n
     }
-    let mut s = search::Searcher::new(rules, train::starting());
+    // The middle game: 16 moves picked at random from the moves sorted by name, so nothing about the
+    // generator (its order) or the search can change which position it is
     let mut mid = rules.start();
-    for _ in 0..16 { s.seen.insert(mid.hash); let m = s.choose(&mid, 2000).mv.unwrap(); mid = rules.play(&mid, &m); }
+    let mut x = 2026u64;
+    let (mut l, mut sc) = (Vec::new(), Vec::new());
+    for _ in 0..16 {
+        rules.legal(&mid, &mut l, &mut sc);
+        l.sort_by_key(|m| rules.move_text(m));
+        x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+        mid = rules.play(&mid, &l[(x % l.len() as u64) as usize]);
+    }
     for (name, p) in [("start", rules.start()), ("move 8", mid)] {
         let mut lists = vec![Vec::new(); depth as usize + 1];
         let t = std::time::Instant::now();
@@ -207,20 +215,22 @@ fn perft(rules: &hex::Rules, args: &[String]) {
 // rules-bench: the rules functions one at a time, in nanoseconds a call, on positions from the bot's
 // own games (where the search spends its time)
 fn rules_bench(rules: &hex::Rules, _args: &[String]) {
-    let mut s = search::Searcher::new(rules, train::starting());
     let mut positions = Vec::new();
     let mut rng = 12345u64;
     for _ in 0..40 {
         let mut p = rules.start();
-        s.seen.clear();
         for ply in 0..80 {
             positions.push(p.clone());
-            s.seen.insert(p.hash);
             let mut list = Vec::new();
             rules.legal(&p, &mut list, &mut Vec::new());
             if list.is_empty() || rules.drawn(&p) { break; }
             rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
-            let m = if ply < 6 { list[(rng % list.len() as u64) as usize] } else { s.choose(&p, 300).mv.unwrap() };
+            // At random from the moves sorted by name (not the search's choice, which the generator's
+            // order would change), with captures taken when there are any, to reach real middle games
+            list.sort_by_key(|m| rules.move_text(m));
+            let caps: Vec<hex::Move> = list.iter().filter(|m| m.captured != 0).copied().collect();
+            let pick = if ply >= 6 && !caps.is_empty() && rng % 2 == 0 { &caps } else { &list };
+            let m = pick[(rng % pick.len() as u64) as usize];
             p = rules.play(&p, &m);
         }
     }
@@ -276,15 +286,22 @@ fn bench(rules: &hex::Rules, args: &[String]) {
     // for --suite positions; the total speed, and a fingerprint of every answer (move, score, depth,
     // positions looked at): a change meant only to be faster must leave the fingerprint as it was
     if let Some(per) = arg(args, "suite").and_then(|s| s.parse::<u64>().ok()) {
-        let mut g = search::Searcher::new(rules, train::starting());
-        g.features = 0;   // the suite's game fixed, whatever the default (it changed once and moved the suite)
+        // The suite's game: moves at random from those sorted by name (captures half the time), so
+        // neither the search nor the generator's order can change which positions it holds (Nov 8:
+        // a game played by the search moved the suite when either changed)
         let mut p = rules.start();
         let mut suite = Vec::new();
+        let mut x = 777u64;
+        let (mut l, mut sc) = (Vec::new(), Vec::new());
         for i in 0..64 {
             if i % 4 == 0 { suite.push(p.clone()); }
-            g.seen.insert(p.hash);
-            let Some(m) = g.choose(&p, 2000).mv else { break };
-            p = rules.play(&p, &m);
+            rules.legal(&p, &mut l, &mut sc);
+            if l.is_empty() { break; }
+            l.sort_by_key(|m| rules.move_text(m));
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            let caps: Vec<hex::Move> = l.iter().filter(|m| m.captured != 0).copied().collect();
+            let pick = if i >= 6 && !caps.is_empty() && x % 2 == 0 { &caps } else { &l };
+            p = rules.play(&p, &pick[(x % pick.len() as u64) as usize]);
         }
         let (mut total, mut secs, mut print, mut depths) = (0u64, 0f64, 0xcbf29ce484222325u64, 0u32);
         let features: u32 = arg(args, "features").and_then(|s| s.parse().ok()).unwrap_or(search::DEFAULT_FEATURES);
