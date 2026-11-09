@@ -18,21 +18,37 @@ export const RATING = Object.fromEntries(RATINGS.map(r => [r.id, r]));
 // Win chance (0 to 100) for the side to move, from an engine score from its point of view. The
 // curve is the one Lichess publishes (fitted to real games): +1 pawn is about 59%, +3 about 75%.
 // A forced mate is 100 for the side giving it and 0 for the side receiving it ({ mate: 0 } = mated).
-export function winChance(score) {
+// `k` is how steep the curve is, per hundredth of a pawn: CHESS_K, or HEX_K for hexagonal chess.
+export const CHESS_K = 0.00368208;
+// Fitted to 3.6 million positions of the hex bot's own games, scored by its neural network
+// (Nov 8): +1 pawn wins about 57%, +3 about 69%. Its pawns win less often than chess's do.
+export const HEX_K = 0.0027;
+export function winChance(score, k = CHESS_K) {
   if (!score) return 50;
   if ('mate' in score) return score.mate > 0 ? 100 : 0;
-  return 50 + 50 * (2 / (1 + Math.exp(-0.00368208 * score.cp)) - 1);
+  return 50 + 50 * (2 / (1 + Math.exp(-k * score.cp)) - 1);
 }
 
 // The same, always from White's point of view (for the bar and the graph)
-export const whiteChance = (score, turn) => (turn === 'w' ? winChance(score) : 100 - winChance(score));
+export const whiteChance = (score, turn, k = CHESS_K) => (turn === 'w' ? winChance(score, k) : 100 - winChance(score, k));
+
+// The hex bot's score (bot.js and the WebAssembly engine: pawns for the side to move, a mate
+// MATE less the plies to it) as the review counts scores: { cp } or { mate } in moves
+export const MATE = 1000;
+export function fromPawns(s) {
+  if (Math.abs(s) > MATE - 200) {
+    const plies = Math.round(MATE - Math.abs(s));
+    return { mate: s > 0 ? Math.ceil(plies / 2) : -Math.ceil(plies / 2) };
+  }
+  return { cp: Math.round(s * 100) };
+}
 
 // One move's rating. `before` and `after` are the analysed positions either side of it
 // ({ score, turn, best }), `uci` the move played, `legal` how many moves were possible.
-export function rate(before, after, uci, legal = 2) {
+export function rate(before, after, uci, legal = 2, k = CHESS_K) {
   const mover = before.turn;
-  const chanceBefore = whiteChance(before.score, before.turn);
-  const chanceAfter = whiteChance(after.score, after.turn);
+  const chanceBefore = whiteChance(before.score, before.turn, k);
+  const chanceAfter = whiteChance(after.score, after.turn, k);
   const loss = Math.max(0, mover === 'w' ? chanceBefore - chanceAfter : chanceAfter - chanceBefore);
   let rating;
   if (uci === before.best || legal === 1) rating = 'best';   // the engine's choice, or the only move there was

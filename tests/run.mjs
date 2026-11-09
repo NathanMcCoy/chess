@@ -3,7 +3,7 @@
 // browser with its own saved game, so they can't affect each other. A failure names the device and
 // the test line, and saves a screenshot as tests/shots/<device>-failed.png.
 import { chromium, webkit, devices } from 'playwright';
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -650,6 +650,103 @@ async function hexSeed(page, start, extra = {}) {
   await page.locator('.hex-pieces piece').first().waitFor();
 }
 
+// The game review on the hex page, with the bot as the analyst, on a hex "Fool's Mate": White's
+// 1. Kf1?? lets Black mate with Qxh1# (found by searching small positions; White had 22 safe moves)
+async function hexReview(rv, who) {
+  await rv.goto('/hex');
+  await rv.locator('.hex-pieces piece').first().waitFor();
+  await hexSeed(rv, hexPosition({ g1: 'K', f11: 'k', a3: 'q', e2: 'R', e1: 'P', h1: 'P', f2: 'P' }), { moves: ['g1f1', 'a3h1'] });
+  await rv.locator('#gameover:not([hidden])').getByRole('button', { name: 'Review this game' }).click();
+  check(who, await rv.locator('#review').isVisible() && await rv.locator('#evalbar').isVisible() && await rv.locator('.actions').isHidden(),
+    'hex: Review this game opens the review, with the evaluation bar');
+  await rv.locator('#rv-progress').waitFor({ state: 'hidden', timeout: 30000 });
+  const ratings = await rv.locator('#moves button').evaluateAll(bs => bs.map(b => {
+    const badge = b.querySelector('.badge');
+    return `${b.textContent.slice(badge ? badge.textContent.length : 0)}:${b.dataset.rating}:${badge ? badge.textContent : ''}`;
+  }));
+  check(who, ratings.length === 2 && ratings[0] === 'Kf1:blunder:??' && ratings[1] === 'Qxh1#:best:★', 'hex: Kf1 is a blunder (??) and Qxh1# the best move (★)', ratings.join(' '));
+  await rv.locator('#next').click();   // the review opens at the start: on to Kf1
+  // The badge in the top-right corner of f1, where the king went
+  const f1 = await rv.locator('#hexboard polygon[data-cell="f1"]').boundingBox();
+  const bb = await rv.locator('[data-shape="badge f1 blunder"] circle').boundingBox().catch(() => null);
+  const inCorner = bb && bb.x + bb.width / 2 > f1.x + f1.width / 2 && bb.y + bb.height / 2 < f1.y + f1.height / 2
+    && bb.x < f1.x + f1.width + 2 && bb.y + bb.height > f1.y - 2;
+  check(who, !!inCorner, 'hex: the board shows a blunder badge in the corner of f1', bb ? `${Math.round(bb.x - f1.x)},${Math.round(bb.y - f1.y)} in a ${Math.round(f1.width)} px cell` : 'no badge');
+  const verdict = (await rv.locator('#rv-verdict').innerText()).replace(/\s+/g, ' ');
+  check(who, /^White’s Kf1\?\? was a blunder\. Best was \S+\. Evaluation −M1\.$/.test(verdict), 'hex: it says what Kf1 was, what was best and that it allows mate', JSON.stringify(verdict));
+  // The arrow is for whatever the review found best (not a fixed move: several are equally good)
+  const best = await rv.evaluate(k => JSON.parse(localStorage.getItem(k)).review.positions[0].best, HEX_SAVE);
+  const arrow = await rv.locator('[data-shape^="arrow"]').evaluateAll(s => s.map(e => e.dataset.shape));
+  const [, bestFrom, bestTo] = (best || '').match(/^([a-l]\d{1,2})([a-l]\d{1,2})[qrbn]?$/) || [];
+  check(who, !!bestFrom && JSON.stringify(arrow) === JSON.stringify([`arrow ${bestFrom} ${bestTo} green`]),
+    `hex: and draws an arrow for the best move (${best})`, JSON.stringify(arrow));
+  // Top lines after Kf1: Black's mate first
+  const lines = () => rv.locator('#rv-lines .rv-line').evaluateAll(ls => ls.map(l => ({ score: l.querySelector('.rv-score').textContent, moves: l.querySelector('.rv-pv').textContent })));
+  await rv.waitForFunction(() => /depth \d+$/.test(document.querySelector('#rv-lines .rv-lines-head')?.textContent || ''), null, { timeout: 15000 });
+  const afterKf1 = await lines();
+  check(who, afterKf1.length === 3 && afterKf1[0].score === '−M1' && afterKf1[0].moves === '1… Qxh1#', 'hex: the top line after Kf1 is Black’s mate in one, among three', JSON.stringify(afterKf1));
+  // Straight back to the start: the lines must be for the start, never left over from after Kf1
+  await rv.locator('#first').click();
+  await rv.waitForFunction(() => /depth \d+$/.test(document.querySelector('#rv-lines .rv-lines-head')?.textContent || ''), null, { timeout: 15000 });
+  const atStart = await lines();
+  const firstNames = new Set(hex.legal(hexPosition({ g1: 'K', f11: 'k', a3: 'q', e2: 'R', e1: 'P', h1: 'P', f2: 'P' }))
+    .map(m => hex.replay(hexPosition({ g1: 'K', f11: 'k', a3: 'q', e2: 'R', e1: 'P', h1: 'P', f2: 'P' }), [m]).names[0]));
+  const firsts = atStart.map(l => l.moves.replace(/^1\.\s+/, '').split(' ')[0]);
+  check(who, atStart.length === 3 && firsts.every(m => firstNames.has(m)) && !firsts.includes('Kf1'),
+    'hex: at the start, three lines, each a legal first move, and none of them Kf1', JSON.stringify(atStart));
+  await rv.locator('#last').click();
+  const last = (await rv.locator('#rv-verdict').innerText()).replace(/\s+/g, ' ');
+  check(who, last === 'Black’s Qxh1# was the best move. Checkmate.', 'hex: Qxh1# is described as the best move, and checkmate', JSON.stringify(last));
+  const fill = await rv.locator('#evalbar .fill').evaluate(f => f.style.height);
+  check(who, fill === '0%', 'hex: with White mated, the bar is all Black', fill);
+  const summary = (await rv.locator('#rv-summary').innerText()).replace(/\s+/g, ' ');
+  check(who, /White Black/.test(summary) && /Blunder 1 0/.test(summary) && /Accuracy [\d.]+ [\d.]+/.test(summary), 'hex: the summary shows accuracy and counts for each side', JSON.stringify(summary));
+  check(who, await rv.locator('#rv-graph polygon').count() === 1 && await rv.locator('#rv-graph .mark[data-rating="blunder"]').count() === 1, 'hex: the graph draws the game with the blunder marked');
+  const wide = await rv.evaluate(() => document.documentElement.scrollWidth - innerWidth);
+  check(who, wide <= 0, 'hex: the bar fits beside the board without widening the page', `${wide}px over`);
+  // Saved: a reload keeps the analysis
+  await rv.reload();   // the result card stays put away (the hex page saves that)
+  await rv.locator('#review-game').click();
+  check(who, await rv.locator('#rv-progress').isHidden() && (await rv.locator('#moves button[data-rating]').count()) === 2, 'hex: a reload keeps the analysis');
+  await rv.locator('#rv-exit').click();
+  check(who, await rv.locator('#review').isHidden() && await rv.locator('#evalbar').isHidden() && await rv.locator('.actions').isVisible()
+    && (await rv.locator('[data-shape]').count()) === 0, 'hex: Done leaves the review, and its arrow and badge go');
+
+  // A long game: the move list scrolls, and the current move must stay in view as the review steps
+  // through (it scrolled before the review was drawn, which then squeezed the list: Nov 8)
+  // At 1200 × 900 on a computer the panel is exactly the window's height, so the list is what gives
+  // way (where it was seen); on phones the page scrolls instead
+  const { moves } = JSON.parse(readFileSync(new URL('data/hex-long-game.json', import.meta.url), 'utf8'));
+  if (who.startsWith('Desktop')) await rv.setViewportSize({ width: 1200, height: 900 });
+  // With its analysis already saved (as after a reload), so the progress bar is gone: while it
+  // shows, the list is at its smallest already and the panel scrolls instead (the squeeze needs a
+  // finished analysis). The scores are made up: only the layout is being checked here.
+  const states = hex.replay(hex.start(), moves).states;
+  const saved = { key: `${hex.start()}|${moves.join(' ')}`, positions: states.map((s, i) => ({ score: { cp: (i % 7) * 10 }, best: null, turn: hex.turn(s), legal: hex.legal(s).length })) };
+  await hexSeed(rv, hex.start(), { moves, review: saved });
+  await rv.locator('#gameover:not([hidden])').getByRole('button', { name: 'Review this game' }).click();
+  check(who, await rv.locator('#rv-progress').isHidden(), 'hex: a saved analysis is used as it is, with nothing left to analyse');
+  const inView = () => rv.evaluate(() => {
+    const c = document.querySelector('#moves .current'), l = document.getElementById('moves');
+    if (!c) return 'no current move';
+    const a = c.getBoundingClientRect(), b = l.getBoundingClientRect();
+    return a.top >= b.top - 1 && a.bottom <= b.bottom + 1 ? '' : `${Math.round(a.top - b.top)}..${Math.round(a.bottom - b.bottom)} px from the list's edges`;
+  });
+  const scrolls = await rv.locator('#moves').evaluate(l => l.scrollHeight > l.clientHeight);
+  // Checked once the top lines are in: their box grows when they arrive, squeezing the list
+  const linesIn = () => rv.waitForFunction(() => /depth \d+$/.test(document.querySelector('#rv-lines .rv-lines-head')?.textContent || ''), null, { timeout: 15000 });
+  // Stepping forward puts the current move at the list's bottom edge, where the squeeze hides it
+  for (let i = 0; i < 30; i++) await rv.keyboard.press('ArrowRight');
+  await linesIn();
+  const forward = await inView();
+  await rv.keyboard.press('End');
+  await linesIn().catch(() => {});   // the last position (mate) has no lines, just its message
+  const atEnd = await inView();
+  check(who, !forward && !atEnd, `hex: in a long game's review the current move stays in view${scrolls ? '' : ' (the list doesn’t scroll here)'}`, `${forward} ${atEnd}`);
+  await rv.locator('#rv-exit').click();
+  await rv.close();
+}
+
 // Arrows and circles drawn with the mouse, as on the chess page (chessground): the right button
 async function hexArrows(page, who) {
   const shapes = () => page.locator('[data-shape]').evaluateAll(s => s.map(e => e.dataset.shape));
@@ -925,6 +1022,8 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
     const noNet = await nn.evaluate(() => `${document.body.dataset.botEngine} ${document.body.dataset.botJudge}`);
     check(who, noNet === 'wasm weights' && (await status(nn)) === 'Your move.', 'without the network file, the bot plays judging by the weights', `${noNet} | ${await status(nn)}`);
     await nn.close();
+
+    await hexReview(await freshPage(), who);
   }
 
   // Against a person: made from the chess page's Play a friend, joined by its link, watched from Live

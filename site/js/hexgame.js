@@ -5,6 +5,7 @@
 import hex from './variants/hex.js';
 import { hexBoard } from './boards/hexboard.js';
 import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath } from './online.js';
+import { RATING, RATINGS, rate, accuracy, whiteChance, evalText, fromPawns, HEX_K } from './review.js';
 
 const SAVE = 'chess.hex.v1';
 const NAME = { w: 'White', b: 'Black' };
@@ -26,12 +27,21 @@ let notice = null;          // a one-off message for the status line
 // You against the site's bot: { side: the side you play, level }, or null for two players
 let vsBot = null;
 const LEVELS = { 1: { name: 'Quick', ms: 250 }, 2: { name: 'Normal', ms: 1000 }, 3: { name: 'Long', ms: 3000 } };
+// The game review (as the chess page's, with the bot in place of Stockfish):
+let review = null;          // { key, positions: [{ score, best, turn, legal }] }: the finished game analysed, saved with it
+let reviewing = false;      // the review is on screen
+let analysing = 0;          // numbers each analysis run, so leaving the review stops it
+let analyst = null;         // the bot in a worker of its own, analysing each position in turn
+let reviewError = null;
+const ANALYSE_MS = 500;     // each position (Stockfish gets the same on the chess page)
+const gameKey = () => `${game.start}|${game.moves.join(' ')}`;
 
 // --- Kept in this browser (the game on this device, two players or against the bot) -----------
 function load() {
   game = { start: hex.start(), moves: [] };
   orientation = 'w';
   vsBot = null;
+  review = null;
   try {
     const s = JSON.parse(localStorage.getItem(SAVE) || 'null');
     if (!s || s.variant !== 'hex' || typeof s.start !== 'string' || !Array.isArray(s.moves)) return;
@@ -41,11 +51,12 @@ function load() {
     autoTurn = s.autoTurn === true;
     cardClosed = s.cardClosed === true;
     if (s.vsBot && ['w', 'b'].includes(s.vsBot.side) && LEVELS[s.vsBot.level]) vsBot = { side: s.vsBot.side, level: s.vsBot.level };
+    review = s.review && s.review.key === gameKey() && Array.isArray(s.review.positions) ? s.review : null;
   } catch { /* storage blocked or the save isn't JSON: a new game */ }
 }
 function save() {
   if (online) return;
-  try { localStorage.setItem(SAVE, JSON.stringify({ variant: 'hex', start: game.start, moves: game.moves, orientation, autoTurn, cardClosed, vsBot })); } catch { /* storage blocked */ }
+  try { localStorage.setItem(SAVE, JSON.stringify({ variant: 'hex', start: game.start, moves: game.moves, orientation, autoTurn, cardClosed, vsBot, review })); } catch { /* storage blocked */ }
 }
 
 // --- Who's who, and how it ended ----------------------------------------------------------------
@@ -101,6 +112,7 @@ const board = hexBoard($('hexboard'), { geometry: hex.geometry, onMove: (from, t
 function render() {
   played = hex.replay(game.start, game.moves);
   if (played.error) played = hex.replay(game.start, []);   // can't happen: the server checks every move
+  if (review && review.key !== gameKey()) dropReview();    // a different game now
   const n = played.states.length - 1;
   const at = viewing ?? n;
   const state = played.states[at];
@@ -151,6 +163,16 @@ function render() {
       b.type = 'button';
       b.textContent = played.names[j];
       b.classList.toggle('current', j === at - 1);
+      const r = ratingOf(j);
+      if (r) {
+        b.dataset.rating = r.rating;
+        b.title = RATING[r.rating].label;
+        const badge = document.createElement('span');
+        badge.className = 'badge';
+        badge.textContent = RATING[r.rating].badge;
+        badge.setAttribute('aria-label', RATING[r.rating].label);
+        b.prepend(badge);
+      }
       b.onclick = () => show(j + 1);
       li.append(b);
     }
@@ -162,14 +184,9 @@ function render() {
     li.textContent = over.score;
     list.append(li);
   }
-  // Keep the current move visible by scrolling the list itself, as the chess page does.
-  // (scrollIntoView scrolled the whole page on a phone after every move: the user's iPhone, Nov 7.)
-  const current = list.querySelector('.current');
-  if (current) {
-    const r = current.getBoundingClientRect(), box = list.getBoundingClientRect();
-    if (r.top < box.top) list.scrollTop -= box.top - r.top;
-    else if (r.bottom > box.bottom) list.scrollTop += r.bottom - box.bottom;
-  }
+  $('review-game').hidden = !over || n === 0;
+  renderReview(at, n);
+  keepCurrentInView();
 
   $('first').disabled = $('prev').disabled = at === 0;
   $('next').disabled = $('last').disabled = at === n;
@@ -192,6 +209,17 @@ function render() {
   renderClocks();
   save();
   askBot();
+}
+
+// Keep the current move visible by scrolling the list itself, as the chess page does. Also after
+// the review's top lines arrive: they make their box taller, which squeezes the list (Nov 8).
+// (scrollIntoView scrolled the whole page on a phone after every move: the user's iPhone, Nov 7.)
+function keepCurrentInView() {
+  const list = $('moves'), current = list.querySelector('.current');
+  if (!current) return;
+  const r = current.getBoundingClientRect(), box = list.getBoundingClientRect();
+  if (r.top < box.top) list.scrollTop -= box.top - r.top;
+  else if (r.bottom > box.bottom) list.scrollTop += r.bottom - box.bottom;
 }
 
 // Which side played move i of this game (0 is the first)
@@ -260,6 +288,300 @@ function stopBot() {
   botAsked++;
   if (botFor && botWorker) { botWorker.terminate(); botWorker = null; }
   botFor = null;
+}
+
+// --- The game review ----------------------------------------------------------------------------
+// As on the chess page, with the site's bot in place of Stockfish: every position of the finished
+// game is analysed in turn (saving as it goes, so a reload carries on where it stopped), and each
+// move is rated by how much of the mover's winning chances it gave away (review.js, on hex's curve).
+// The bot works in workers of its own (bot/worker.js), one for the positions and one for the top
+// lines, so the review never waits for the other and never touches a game against the bot.
+function reviewWorker() {
+  const w = new Worker('/js/bot/worker.js', { type: 'module' });
+  const waiting = new Map();
+  let next = 0;
+  const failAll = why => { for (const f of waiting.values()) f.reject(new Error(why)); waiting.clear(); };
+  w.onmessage = ({ data }) => {
+    const f = waiting.get(data.id);
+    if (!f) return;
+    waiting.delete(data.id);
+    if (data.error) f.reject(new Error(data.error)); else f.resolve(data);
+  };
+  w.onerror = e => { e.preventDefault?.(); failAll('it couldn’t start'); };
+  return {
+    ask(message) {
+      const id = ++next;
+      return new Promise((resolve, reject) => {
+        waiting.set(id, { resolve, reject });
+        w.postMessage({ id, variant: 'hex', type: 'analyse', ...message });
+      });
+    },
+    stop() { w.terminate(); failAll('stopped'); },
+  };
+}
+
+// A position the bot needn't be asked about: mate, Gliński's ¾ stalemate, or a draw by the rules
+function settled(states, i, result) {
+  const state = states[i];
+  if (!hex.legal(state).length) return hex.inCheck(state) ? { mate: 0 } : { cp: -500 };   // ¼ to the side stalemated
+  if (i === states.length - 1 && result && ['material', 'repetition', 'fifty'].includes(result.reason)) return { cp: 0 };
+  return null;
+}
+
+async function startReview() {
+  if (!outcome() || !game.moves.length) return;
+  reviewing = true;
+  cardClosed = true;
+  reviewError = null;
+  if (viewing === null) viewing = 0;   // start from the beginning, like reading the game through
+  if (!review) review = { key: gameKey(), positions: [] };
+  render();
+  const mine = ++analysing;
+  analyst ||= reviewWorker();
+  const { start, moves } = game, key = review.key;
+  const replay = hex.replay(start, moves);
+  for (let i = review.positions.length; i <= moves.length; i++) {
+    let found;
+    const score = settled(replay.states, i, replay.result);
+    if (score) found = { score, best: null };
+    else {
+      try {
+        const r = await analyst.ask({ start, moves: moves.slice(0, i), timeMs: ANALYSE_MS, count: 1 });
+        const best = r.lines[0];
+        found = best ? { score: fromPawns(best.score), best: best.pv[0] } : { score: { cp: 0 }, best: null };
+      } catch (e) {
+        if (mine === analysing) { reviewError = e.message || String(e); render(); }
+        return;
+      }
+    }
+    if (mine !== analysing || !review || review.key !== key) return;   // left, or the game changed, meanwhile
+    const state = replay.states[i];
+    review.positions.push({ ...found, turn: hex.turn(state), legal: hex.legal(state).length });
+    save();
+    render();
+  }
+}
+
+function leaveReview() {
+  stopLines();
+  analysing++;
+  analyst?.stop();
+  analyst = null;
+  reviewing = false;
+  viewing = null;
+  render();
+}
+
+function dropReview() {
+  stopLines();
+  analysing++;
+  analyst?.stop();
+  analyst = null;
+  review = null;
+  reviewing = false;
+}
+
+// Move i's rating (0 = the first move), once the positions either side of it are analysed
+function ratingOf(i) {
+  const p = review && review.positions;
+  if (!p || !p[i + 1]) return null;
+  return rate(p[i], p[i + 1], game.moves[i], p[i].legal, HEX_K);
+}
+
+// The top three lines in the position on the board: a quick look first, then a longer one. One
+// question at a time; when the board moves on meanwhile, the next question is about where it is now.
+let liner = null, lineBusy = false;
+let lineState = { key: null };
+function wantLines(at) {
+  const key = `${gameKey()}#${at}`;
+  if (lineState.key === key) return;
+  lineState = { key, at, lines: [], depth: 0, done: false, over: !hex.legal(played.states[at]).length || (at === played.states.length - 1 && !!played.result) };
+  renderLines();
+  if (!lineState.over) askLines();
+}
+async function askLines() {
+  if (lineBusy) return;
+  lineBusy = true;
+  liner ||= reviewWorker();
+  try {
+    for (;;) {
+      const ls = lineState;
+      if (!reviewing || !ls.key || ls.over || ls.done) break;
+      const quick = !ls.lines.length;
+      const r = await liner.ask({ start: game.start, moves: game.moves.slice(0, ls.at), timeMs: quick ? 100 : 500, count: 3 });
+      if (lineState !== ls) continue;   // the board moved on: ask about where it is now
+      lineState = { ...ls, lines: r.lines, depth: r.lines[0]?.depth || 0, done: !quick };
+      renderLines();
+    }
+  } catch (e) {
+    if (lineState.key && reviewing) { lineState = { ...lineState, error: e.message || String(e) }; renderLines(); }
+  } finally {
+    lineBusy = false;
+  }
+}
+function stopLines() {
+  lineState = { key: null };
+  liner?.stop();
+  liner = null;
+}
+
+// A line of moves as people write them, from the position after `at` moves: "12. Nf3 Nc6 13. Bb5",
+// or "12… Nc6 13. Bb5" from Black
+function lineText(at, pv, plies = 9) {
+  let shown = pv.slice(0, plies);
+  let r = hex.replay(game.start, [...game.moves.slice(0, at), ...shown]);
+  while (r.error && shown.length) { shown = shown.slice(0, -1); r = hex.replay(game.start, [...game.moves.slice(0, at), ...shown]); }
+  const blackFirst = hex.turn(game.start) === 'b' ? 1 : 0;
+  const out = [];
+  r.names.slice(at).forEach((name, k) => {
+    const j = at + k, number = Math.floor((j + blackFirst) / 2) + 1;
+    if (plySide(j) === 'w') out.push(`${number}.`);
+    else if (!out.length) out.push(`${number}…`);
+    out.push(name);
+  });
+  return out.join(' ') + (pv.length > shown.length ? ' …' : '');
+}
+
+function renderLines() {
+  const box = $('rv-lines');
+  box.replaceChildren();
+  const { key, at, lines, depth, done, over, error } = lineState;
+  if (!key) return;
+  const head = document.createElement('p');
+  head.className = 'rv-lines-head';
+  if (error) head.textContent = `The bot isn’t working: ${error}.`;
+  else if (over) head.textContent = 'No moves to suggest: the game is over here.';
+  else head.textContent = depth ? `Top lines · depth ${depth}${done ? '' : ' · thinking…'}` : 'Top lines · thinking…';
+  box.append(head);
+  const turn = hex.turn(played.states[at]);
+  for (const line of lines || []) {
+    const row = document.createElement('p');
+    row.className = 'rv-line';
+    const score = document.createElement('span');
+    const text = evalText(fromPawns(line.score), turn);
+    score.className = `rv-score ${/^−/.test(text) ? 'black' : 'white'}`;
+    score.textContent = text;
+    const moves = document.createElement('span');
+    moves.className = 'rv-pv';
+    moves.textContent = lineText(at, line.pv);
+    row.append(score, moves);
+    box.append(row);
+  }
+  keepCurrentInView();
+}
+
+// Who a side is, short (the review's table and verdict)
+function shortName(c) {
+  if (online) return c === online.you ? 'You' : online.you ? Them() : NAME[c];
+  if (vsBot) return c === vsBot.side ? 'You' : 'The bot';
+  return NAME[c];
+}
+const possessive = c => (shortName(c) === 'You' ? 'Your' : `${shortName(c)}’s`);
+
+function renderReview(at, n) {
+  document.body.classList.toggle('reviewing', reviewing);
+  $('review').hidden = !reviewing;
+  $('evalbar').hidden = !reviewing;
+  $('rv-summary').hidden = !reviewing;
+  if (!reviewing) { board.setAutoShapes([]); return; }
+  const positions = review ? review.positions : [];
+  const total = n + 1;
+  const fullMoves = Math.ceil(n / 2);
+
+  // Progress while it works
+  const progress = $('rv-progress');
+  progress.hidden = positions.length >= total && !reviewError;
+  progress.querySelector('span').textContent = reviewError
+    ? `The bot isn’t working: ${reviewError}. Reload the page to try again.`
+    : `Analysing move ${Math.min(Math.floor(positions.length / 2) + 1, fullMoves)} of ${fullMoves}…`;
+  progress.querySelector('progress').value = positions.length / total;
+
+  // The evaluation bar: White's chances in the position on the board
+  const here = positions[at];
+  const bar = $('evalbar');
+  const white = here ? whiteChance(here.score, here.turn, HEX_K) : 50;
+  bar.classList.toggle('flipped', orientation === 'b');
+  bar.classList.toggle('black-ahead', white < 50);
+  bar.querySelector('.fill').style.height = `${white}%`;
+  bar.querySelector('.score').textContent = here ? evalText(here.score, here.turn).replace(/^[+−]/, '') : '';
+
+  // The verdict on the move just played, and an arrow for what the bot would have played
+  wantLines(at);
+  const verdict = $('rv-verdict');
+  const r = at > 0 ? ratingOf(at - 1) : null;
+  const shapes = [];
+  verdict.style.removeProperty('--rc');
+  if (at === 0) verdict.textContent = 'The starting position. Step through the moves with ▶ or the arrow keys.';
+  else if (!r) verdict.textContent = `${played.names[at - 1]}: still being analysed…`;
+  else {
+    const before = positions[at - 1], label = RATING[r.rating].label.toLowerCase();
+    verdict.replaceChildren();
+    verdict.style.setProperty('--rc', `var(--r-${r.rating})`);
+    const head = document.createElement('span');
+    const b = document.createElement('b');
+    b.textContent = `${played.names[at - 1]}${RATING[r.rating].symbol}`;
+    const what = r.forced ? ' was the only move.' : r.rating === 'best' ? ' was the best move.'
+      : ` was ${/^[aeiou]/.test(label) ? 'an' : 'a'} ${label}.`;
+    head.append(`${possessive(plySide(at - 1))} `, b, what);
+    const line = document.createElement('span');
+    line.className = 'best';
+    const now = positions[at];
+    const evalNow = !now ? '' : now.score && now.score.mate === 0 ? 'Checkmate.' : `Evaluation ${evalText(now.score, now.turn)}.`;
+    const bestName = before.best && hex.replay(game.start, [...game.moves.slice(0, at - 1), before.best]).names?.at(-1);
+    line.textContent = [r.rating !== 'best' && bestName ? `Best was ${bestName}.` : '', evalNow].filter(Boolean).join(' ');
+    verdict.append(head, line);
+    const best = r.rating !== 'best' && before.best?.match(MOVE);
+    if (best) shapes.push({ orig: best[1], dest: best[2], brush: 'green' });
+    shapes.push({ orig: game.moves[at - 1].match(MOVE)[2], badge: { rating: r.rating, text: RATING[r.rating].badge } });
+  }
+  board.setAutoShapes(shapes);
+
+  // The graph: White's chances move by move, with the poor moves marked and the current one lit
+  const svg = $('rv-graph');
+  const x = i => (n ? (i / n) * 100 : 0);
+  const y = p => 32 - (p / 100) * 32;
+  const points = positions.map((p, i) => `${x(i).toFixed(2)},${y(whiteChance(p.score, p.turn, HEX_K)).toFixed(2)}`);
+  let marks = '';
+  for (let i = 0; i < n; i++) {
+    const ri = ratingOf(i);
+    if (ri && ['inaccuracy', 'mistake', 'blunder'].includes(ri.rating)) {
+      marks += `<line class="mark" data-rating="${ri.rating}" x1="${x(i + 1)}" x2="${x(i + 1)}" y1="0" y2="32"/>`;
+    }
+  }
+  svg.innerHTML = '<line class="mid" x1="0" x2="100" y1="16" y2="16"/>'
+    + (points.length > 1 ? `<polygon class="area" points="0,32 ${points.join(' ')} ${x(positions.length - 1).toFixed(2)},32"/>` : '')
+    + marks + `<line class="now" x1="${x(at)}" x2="${x(at)}" y1="0" y2="32"/>`;
+
+  // The summary: accuracy and how many moves of each rating, for each side
+  const sides = ['w', 'b'].map(c => ({ c, name: shortName(c), losses: [], counts: {} }));
+  for (let i = 0; i < n; i++) {
+    const ri = ratingOf(i);
+    if (!ri) continue;
+    const side = sides.find(s => s.c === plySide(i));
+    side.losses.push(ri.loss);
+    side.counts[ri.rating] = (side.counts[ri.rating] || 0) + 1;
+  }
+  const acc = s => { const a = accuracy(s.losses); return a === null ? '…' : a.toFixed(1); };
+  const table = $('rv-summary');
+  table.replaceChildren();
+  const row = (cells, cls) => {
+    const tr = document.createElement('tr');
+    if (cls) tr.className = cls;
+    for (const [text, rating, tag = 'td', klass] of cells) {
+      const c = document.createElement(tag);
+      c.textContent = text;
+      if (rating) c.dataset.rating = rating;
+      if (klass) c.className = klass;
+      tr.append(c);
+    }
+    return tr;
+  };
+  const thead = document.createElement('thead');
+  thead.append(row([['', null, 'th'], ...sides.map(s => [s.name === NAME[s.c] ? s.name : `${s.name} (${NAME[s.c]})`, null, 'th'])]));
+  const body = document.createElement('tbody');
+  body.append(row([['Accuracy'], ...sides.map(s => [acc(s)])], 'acc'));
+  for (const rt of RATINGS) body.append(row([[rt.label, rt.id, 'td', 'label'], ...sides.map(s => [String(s.counts[rt.id] || 0), s.counts[rt.id] ? rt.id : null])]));
+  table.append(thead, body);
 }
 
 // --- Games against people -----------------------------------------------------------------------
@@ -475,6 +797,13 @@ function playBot() {
 $('new-game').onclick = newGame;
 $('go-new').onclick = newGame;
 $('go-close').onclick = () => { cardClosed = true; render(); };
+$('go-review').onclick = startReview;
+$('review-game').onclick = startReview;
+$('rv-exit').onclick = leaveReview;
+$('rv-graph').onclick = e => {
+  const r = e.currentTarget.getBoundingClientRect();
+  show(Math.round(((e.clientX - r.left) / r.width) * game.moves.length));
+};
 $('undo').onclick = () => {
   if (online) return;
   stopBot();

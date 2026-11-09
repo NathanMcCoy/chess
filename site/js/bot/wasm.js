@@ -60,6 +60,23 @@ export async function loadEngine(bytes, now = () => performance.now()) {
       const [move, score, depth, nodes] = text.split(' ');
       return { move, score: Number(score), depth: Number(depth), nodes: Number(nodes) };
     },
+    // The best `count` lines for the game start + moves, for the game review, each searched for about
+    // `ms` milliseconds: [{ score, depth, pv: [moves] }], best first (scores as choose's), or [] when
+    // the game is over
+    analyse(start, moves, ms, count = 1) {
+      const bytes = encoder.encode(`${start}\n${moves.join(' ')}`);
+      const p = x.alloc(bytes.length);
+      new Uint8Array(x.memory.buffer, p, bytes.length).set(bytes);
+      const n = x.analyse(p, bytes.length, ms, count);
+      x.free(p, bytes.length);
+      const text = answer(n);
+      if (text === 'none') return [];
+      if (text.startsWith('error')) throw new Error(text.slice(6));
+      return text.split('\n').map(line => {
+        const [score, depth, ...pv] = line.split(' ');
+        return { score: Number(score), depth: Number(depth), pv };
+      });
+    },
     // A fingerprint of the Rust source it was built from (trainer/build.rs)
     sourceHash: () => answer(x.source_hash()),
   };

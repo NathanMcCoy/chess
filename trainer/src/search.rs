@@ -91,7 +91,12 @@ pub struct Searcher<'a> {
     moves: Vec<Vec<Move>>, // one list per ply, reused
     scratch: Vec<Move>,
     pub seen: Seen,   // every earlier position in the game
+    exclude: Vec<u16>,   // first moves not to consider (lines(): the best ones already found)
 }
+
+// One of the best lines from a position: its first move's score (pawns, for the side to move; mate
+// MATE less the plies to it), how deep it was searched, and the moves (from the position table)
+pub struct Line { pub score: f64, pub depth: u32, pub moves: Vec<Move> }
 
 // A set of position hashes. They're random already, so they're used as they are: Rust's usual
 // hashing is built to resist attacks, and was a noticeable cost here
@@ -115,8 +120,44 @@ impl<'a> Searcher<'a> {
             r, w, table: vec![Entry::default(); 1 << TABLE_BITS], stamp: 0, nodes: 0, limit: 0, clock: None, net: None, stopped: false,
             killers: [[u16::MAX; 2]; MAX_PLY], history: vec![0; CELLS * CELLS], path: Vec::new(),
             moves: (0..MAX_PLY + 8).map(|_| Vec::with_capacity(128)).collect(), scratch: Vec::with_capacity(128),
-            seen: Seen::default(), accs: vec![crate::nn::Acc::default(); MAX_PLY + 8],
+            seen: Seen::default(), accs: vec![crate::nn::Acc::default(); MAX_PLY + 8], exclude: Vec::new(),
         }
+    }
+
+    // The best `count` lines from `root`, for the game review: the best move, then the best of the
+    // rest, and so on, each searched for `ms` milliseconds by `now`. Fewer if there are fewer moves.
+    pub fn lines(&mut self, root: &Pos, count: usize, ms: f64, now: fn() -> f64) -> Vec<Line> {
+        let mut out: Vec<Line> = Vec::new();
+        self.exclude.clear();
+        for _ in 0..count {
+            let c = self.choose_timed(root, ms, now);
+            let Some(m) = c.mv else { break };
+            let moves = self.pv(root, &m, 12);
+            out.push(Line { score: c.score, depth: c.depth, moves });
+            self.exclude.push(code(&m));
+        }
+        self.exclude.clear();
+        out
+    }
+
+    // A line starting with move `first` from `root`: then each position's best move as the last
+    // search left it in the table, while there is one (and the line doesn't come back on itself)
+    pub fn pv(&mut self, root: &Pos, first: &Move, max: usize) -> Vec<Move> {
+        let mut line = vec![*first];
+        let mut p = self.r.play(root, first);
+        let mut been = vec![root.hash, p.hash];
+        let mut list = Vec::new();
+        while line.len() < max {
+            let e = self.table[(p.hash as usize) & ((1 << TABLE_BITS) - 1)];
+            if e.key != p.hash || e.stamp != self.stamp || e.best == u16::MAX { break; }
+            self.r.legal(&p, &mut list, &mut self.scratch);
+            let Some(m) = list.iter().find(|m| code(m) == e.best).copied() else { break };
+            p = self.r.play(&p, &m);
+            if been.contains(&p.hash) { break; }
+            been.push(p.hash);
+            line.push(m);
+        }
+        line
     }
 
     // Before looking at move m in position p (at step `ply` of the line): the network's first layer
@@ -263,6 +304,11 @@ impl<'a> Searcher<'a> {
         let mut root_moves = Vec::new();
         self.r.legal(root, &mut root_moves, &mut self.scratch);
         if root_moves.is_empty() { return Choice { mv: None, score: self.terminal(root, 0), depth: 0, nodes: 0 }; }
+        if !self.exclude.is_empty() {
+            let ex = &self.exclude;
+            root_moves.retain(|m| !ex.contains(&code(m)));
+            if root_moves.is_empty() { return Choice { mv: None, score: f64::NEG_INFINITY, depth: 0, nodes: 0 }; }
+        }
         self.order(root, &mut root_moves, u16::MAX, 0);
         if let Some(net) = &self.net { net.refresh(self.r, root, &mut self.accs[0]); }   // the root's, from every piece
         let mut result = Choice { mv: Some(root_moves[0]), score: 0.0, depth: 0, nodes: 0 };

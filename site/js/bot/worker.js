@@ -6,6 +6,10 @@
 // For hex it thinks with the Rust engine compiled to WebAssembly (wasm.js: the same rules and
 // judgement, about 40 times faster, so it sees much further in the same time), and falls back to
 // bot.js if that can't load or ever fails. `engine` in the answer says which did it: 'wasm' or 'js'.
+//
+// The game review asks { id, type: 'analyse', variant, start, moves, timeMs, count } and gets back
+// { id, lines: [{ score, depth, pv }], engine, judge }: the best `count` lines, each searched for
+// timeMs ([] when the game is over). bot.js, the fallback, gives only its one best move.
 // The WebAssembly engine judges by the neural network in /data/bot/hex-net.bin when that loads
 // (tools/build-net.mjs makes it), else by the weights; `judge` says which: 'net' or 'weights'.
 import { variant } from '../variants/index.js';
@@ -49,6 +53,17 @@ onmessage = async ({ data }) => {
     if (!v) throw new Error('unknown variant');
     const w = await weightsFor(v);
     const engine = await fastFor(v, w);
+    if (data.type === 'analyse') {
+      if (engine) {
+        try {
+          const lines = engine.analyse(data.start, data.moves, data.timeMs, data.count || 1);
+          return postMessage({ id: data.id, lines, engine: 'wasm', judge: engine.judge });
+        } catch { /* bot.js below */ }
+      }
+      const r = chooseMove(v, { start: data.start, moves: data.moves }, w, { timeMs: data.timeMs });
+      const lines = r.move ? [{ score: r.score, depth: r.depth, pv: [r.move] }] : [];
+      return postMessage({ id: data.id, lines, engine: 'js' });
+    }
     if (engine) {
       try {
         const r = engine.choose(data.start, data.moves, data.timeMs);
