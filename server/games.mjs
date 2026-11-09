@@ -113,7 +113,34 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
       running: g.status === 'playing' && g.turn_started != null ? turn : null,
       serverNow: t,
       you,
+      rematch: rematchOf(g),
+      rematchOf: g.rematch_of || null,   // on a rematch: the game it follows
     };
+  }
+
+  // The rematch offered from a finished game, as both players see it: the new game, who offered it
+  // (their side in this game), its game and time controls, the side the other would play, and how
+  // it stands: 'waiting' (to be accepted), 'playing' or 'over' (accepted), 'aborted' (declined, when
+  // the reason is 'declined', or called off by the one who offered)
+  function rematchOf(g) {
+    if (!g.rematch) return null;
+    let r;
+    try { r = load(g.rematch); } catch { return null; }
+    // While it waits, the one seat taken is the offerer's: the other side is the one on offer
+    const offerer = COLOURS.find(c => r[`${c}_seat`] || r[`${c}_account`] != null) || 'w';
+    return {
+      id: r.id, variant: r.variant, by: r.rematch_by, status: r.status, reason: r.result?.reason ?? null,
+      times: Object.fromEntries(COLOURS.map(c => [c, { base: r[`${c}_base`], inc: r[`${c}_inc`] }])),
+      side: r.status === 'waiting' ? other(offerer) : null,   // the side waiting for the other player
+    };
+  }
+
+  // Is the caller the player a rematch is waiting for: the other side of the game it follows?
+  function invited(r, proof, account) {
+    if (!r.rematch_of) return true;
+    let old;
+    try { old = load(r.rematch_of); } catch { return false; }
+    return seatOf(old, proof, account) === other(r.rematch_by);
   }
 
   // Games still being played when the server starts again get their timers back
@@ -141,15 +168,50 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
       return { id, seat, color: side };
     },
 
-    join(id, seat, account = null) {
+    // proof: for a rematch, the joiner's seat key in the game it follows (only its other player may join)
+    join(id, seat, account = null, proof = null) {
       const g = load(id);
       const already = seatOf(g, seat, account);
       if (already) return { seat: null, color: already };   // you're in it already (your other tab, or your account)
       if (g.status !== 'waiting') throw new GameError(409, 'Someone has already taken the other side of this game.');
+      if (!invited(g, proof, account)) throw new GameError(403, 'This rematch is for the other player of the last game.');
       const open = COLOURS.find(c => !g[`${c}_seat`] && g[`${c}_account`] == null);
       const key = randomBytes(24).toString('base64url');
       save(g, { status: 'playing', [`${open}_seat`]: hash(key), [`${open}_account`]: account ? account.id : null });
+      if (g.rematch_of) changed(g.rematch_of);   // the last game's page shows the rematch as accepted
       return { seat: key, color: open };
+    },
+
+    // A rematch, offered by a player of a finished game: a new game (by link only, never listed)
+    // with the offerer seated, which only this game's other player may join. Its settings are
+    // chosen afresh: game, side and both time controls.
+    rematch(id, seat, account, { variant: variantId, color, times } = {}) {
+      const g = load(id);
+      const c = seatOf(g, seat, account);
+      if (!c) throw new GameError(403, 'You’re not playing in this game.');
+      if (!['over', 'aborted'].includes(g.status)) throw new GameError(409, 'A rematch can be offered once the game is over.');
+      if (!COLOURS.every(s => g[`${s}_seat`] || g[`${s}_account`] != null)) throw new GameError(409, 'Nobody else joined this game: there’s no one to offer a rematch to.');
+      if (g.rematch) {
+        const r = load(g.rematch);
+        if (r.status === 'waiting') {
+          throw new GameError(409, r.rematch_by === c ? 'You’ve offered a rematch already.' : 'They’ve offered a rematch already: accept it, or decline it first.');
+        }
+        if (r.status !== 'aborted') throw new GameError(409, 'The rematch has been played: offer the next one from its own page.');
+      }
+      const made = this.create({ variant: variantId, color, times, account, listed: false });
+      db.prepare('UPDATE games SET rematch_of = ?, rematch_by = ? WHERE id = ?').run(g.id, c, made.id);
+      save(g, { rematch: made.id });   // both players' pages see the offer
+      return { ...made, variant: load(made.id).variant };
+    },
+
+    // Declining a rematch offered to you (proof: your seat key in the game it follows)
+    refuse(id, proof, account) {
+      const r = load(id);
+      if (!r.rematch_of || r.status !== 'waiting') throw new GameError(409, 'There’s no rematch offer to decline.');
+      if (!invited(r, proof, account)) throw new GameError(403, 'This rematch is for the other player of the last game.');
+      save(r, { status: 'aborted', result: { winner: null, reason: 'declined' }, turn_started: null, draw_offer: null });
+      changed(r.rematch_of);
+      return view(r, null);
     },
 
     move(id, seat, account, move) {
@@ -209,6 +271,7 @@ export function makeGames(db, { now = () => Date.now(), changed = () => {} } = {
         throw new GameError(409, 'A game can only be called off before both sides have moved.');
       }
       save(g, { status: 'aborted', result: { winner: null, reason: 'aborted' }, turn_started: null, draw_offer: null });
+      if (g.rematch_of) changed(g.rematch_of);   // a rematch offer called off: the last game's page shows it
       return view(g, c);
     },
 

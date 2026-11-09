@@ -5,7 +5,7 @@ import { Chessground } from '../vendor/chessground.js';
 import { Engine, LEVELS } from './engine.js';
 import { RATING, RATINGS, rate, accuracy, whiteChance, evalText } from './review.js';
 import { initAccounts } from './account.js';
-import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath } from './online.js';
+import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath, rematchButtons } from './online.js';
 
 const $ = id => document.getElementById(id);
 const SAVE = 'chess.game.v1';
@@ -140,6 +140,7 @@ function render() {
   $('resign').disabled = online ? !(online.you && online.view.status === 'playing') : !!result || moves.length === 0;
   $('download').disabled = moves.length === 0;
   $('review-game').hidden = !result || moves.length === 0;
+  rematch.render();
   renderOnline();
   renderClocks();
 }
@@ -700,6 +701,7 @@ function applyView(v) {
 }
 
 function onlineResult(v) {
+  if (v.status === 'aborted' && v.result?.reason === 'declined') return { score: '*', winner: null, reason: 'aborted', text: `${Them()} declined the rematch.` };
   if (v.status === 'aborted') return { score: '*', winner: null, reason: 'aborted', text: 'The game was called off.' };
   if (v.status !== 'over' || !v.result) return null;
   const { winner, reason, points } = v.result, you = online.you;
@@ -766,9 +768,10 @@ function backToStockfish(changeAddress = true, message = null) {
 function onlineStatus() {
   const v = online.view, you = online.you, turn = game.turn();
   if (online.problem) return online.problem;
-  if (result) return result.text;
+  if (result) { const r = rematch.status(); return r ? `${result.text} ${r}` : result.text; }
   if (v.status === 'waiting') {
     if (!you) return 'Waiting for a second player.';
+    if (v.rematchOf) return `Waiting for ${them()} to accept the rematch.`;
     return v.listed ? 'Waiting for an opponent: your game is in Live games. You can also send the link below.' : 'Waiting for your friend: send them the link below.';
   }
   let text = you ? (turn === you ? (game.inCheck() ? 'Check! Your move.' : 'Your move.') : `${Them()}’s move.`) : `${COLOR_NAME[turn]} to move.`;
@@ -782,7 +785,7 @@ function renderOnline() {
   box.hidden = !online;
   if (!online) return;
   const v = online.view, you = online.you, playing = v.status === 'playing';
-  $('ob-link-row').hidden = !(you && v.status === 'waiting');
+  $('ob-link-row').hidden = !(you && v.status === 'waiting') || !!v.rematchOf;   // a rematch is for them only: no link to send
   $('ob-link').value = `${location.origin}/?g=${online.id}`;
   const theirOffer = you && playing && v.drawOffer === otherSide(you);
   $('ob-draw').hidden = !(you && playing) || theirOffer;
@@ -949,7 +952,18 @@ $('rv-graph').onclick = e => {
   const r = e.currentTarget.getBoundingClientRect();
   show(Math.round(((e.clientX - r.left) / r.width) * game.history().length));
 };
-$('go-new').onclick = openNewGame;
+// On a finished game against a person, the card's New game is the rematch (online.js)
+const rematch = rematchButtons({
+  current: () => online,
+  open: (id, variant) => {
+    if (variant !== 'chess') return location.assign(gamePath(id, variant));
+    history.pushState(null, '', gamePath(id, 'chess'));
+    openOnline(id);
+  },
+  problem: text => { if (online) online.problem = text; render(); },
+  Them,
+});
+$('go-new').onclick = () => { const a = rematch.cardAction(); if (a) rematch.click(a); else openNewGame(); };
 $('go-close').onclick = () => { cardClosed = true; render(); };
 $('undo').onclick = takeBack;
 $('flip').onclick = () => { orientation = orientation === 'white' ? 'black' : 'white'; save(); render(); };

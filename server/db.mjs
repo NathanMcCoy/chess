@@ -52,6 +52,11 @@ const STEPS = [
    CREATE INDEX games_status ON games(status);`,
   // 3: games listed in Live games (open to anyone to join, and shown to watch); the rest are by link only
   `ALTER TABLE games ADD COLUMN listed INTEGER NOT NULL DEFAULT 0;`,
+  // 4: rematches. On the finished game, the rematch offered from it (the new game's id); on the new
+  // game, the game it's a rematch of and which side of that game offered it (only the other may join)
+  `ALTER TABLE games ADD COLUMN rematch TEXT;
+   ALTER TABLE games ADD COLUMN rematch_of TEXT;
+   ALTER TABLE games ADD COLUMN rematch_by TEXT;`,
 ];
 
 export function openDb(dir) {

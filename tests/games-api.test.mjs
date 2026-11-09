@@ -166,3 +166,31 @@ test('a game made without listing is never in Live games', async () => {
   assert.ok(!open.some(g => g.id === made.body.id));
   maker.close();
 });
+
+test('a rematch through the routes: offered, seen on the finished game\'s stream, joined only with proof, declined', async () => {
+  const { body: { id, seat: w } } = await post('/api/games', { color: 'w', times: TIMES });
+  const { body: { seat: b } } = await post(`/api/games/${id}/join`, {});
+  await post(`/api/games/${id}/resign`, { seat: b });
+  const s = stream(id);
+  await s.ready;
+  assert.equal((await s.next()).rematch, null, 'no offer yet');
+  const offer = await post(`/api/games/${id}/rematch`, { seat: w, variant: 'hex', color: 'b', times: TIMES });
+  assert.equal(offer.status, 201);
+  assert.equal(offer.body.variant, 'hex');
+  const seen = await s.next();
+  assert.deepEqual([seen.rematch.id, seen.rematch.status, seen.rematch.side, seen.rematch.variant], [offer.body.id, 'waiting', 'w', 'hex'], 'the offer arrives on the finished game');
+  assert.equal((await post(`/api/games/${offer.body.id}/join`, {})).status, 403, 'not without proof');
+  assert.equal((await post(`/api/games/${offer.body.id}/refuse`, { proof: w })).status, 403, 'nor declined by the offerer');
+  assert.equal((await post(`/api/games/${offer.body.id}/refuse`, { proof: b })).status, 200);
+  const declined = await s.next();
+  assert.deepEqual([declined.rematch.status, declined.rematch.reason], ['aborted', 'declined']);
+  // Offered again, and accepted with the proof
+  const again = await post(`/api/games/${id}/rematch`, { seat: b, color: 'w', times: TIMES });
+  assert.equal(again.status, 201);
+  const joined = await post(`/api/games/${again.body.id}/join`, { proof: w });
+  assert.equal(joined.status, 200);
+  assert.equal(joined.body.color, 'b');
+  assert.equal((await get(`/api/games/${again.body.id}`, { 'X-Seat': joined.body.seat })).body.status, 'playing');
+  assert.equal((await post(`/api/games/${id}/rematch`, { seat: 'not-a-seat', color: 'w', times: TIMES })).status, 403);
+  s.close();
+});
