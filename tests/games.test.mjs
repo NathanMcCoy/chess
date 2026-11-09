@@ -249,3 +249,78 @@ test('a hexagonal chess game: its own start, its own rules, and Live games says 
   assert.equal(after.turn, 'w');
   assert.equal(games.lobby().live[0].variant, 'hex');
 });
+
+// Rematches: offered from a finished game, a new game that only its other player may join
+const THREE_TWO = { w: { minutes: 3, increment: 2 }, b: { minutes: 3, increment: 2 } };
+test('a rematch: offered once the game is over, with new settings, for the other player only', () => {
+  const { games, id, w, b, changes } = started();
+  assert.throws(() => games.rematch(id, w, null, { variant: 'hex', color: 'b', times: THREE_TWO }), err(409, /once the game is over/));
+  games.resign(id, b);
+  assert.throws(() => games.rematch(id, 'nobody', null, { color: 'b', times: THREE_TWO }), err(403));
+  changes.length = 0;
+  const r = games.rematch(id, w, null, { variant: 'hex', color: 'b', times: THREE_TWO });
+  assert.equal(r.variant, 'hex');
+  assert.equal(r.color, 'b');
+  assert.ok(changes.includes(id), 'the finished game\'s pages hear of the offer');
+  // Both players see it on the finished game, with the side the other would play
+  for (const seat of [w, b]) {
+    const offer = games.get(id, seat).rematch;
+    assert.deepEqual({ ...offer, times: undefined }, { id: r.id, variant: 'hex', by: 'w', status: 'waiting', reason: null, side: 'w', times: undefined });
+    assert.equal(offer.times.w.base, 180_000);
+  }
+  const fresh = games.get(r.id, r.seat);
+  assert.equal(fresh.status, 'waiting');
+  assert.equal(fresh.rematchOf, id);
+  assert.equal(fresh.listed, false, 'never in Live games');
+  // Not a second offer from either side while one waits
+  assert.throws(() => games.rematch(id, w, null, { color: 'w', times: TEN_FIVE }), err(409, /already/));
+  assert.throws(() => games.rematch(id, b, null, { color: 'w', times: TEN_FIVE }), err(409, /accept it/));
+  // Only the last game's other player may take the seat: not a stranger with the link, nor the offerer's own old seat
+  assert.throws(() => games.join(r.id, null, null, null), err(403, /other player/));
+  assert.throws(() => games.join(r.id, null, null, w), err(403));
+  const joined = games.join(r.id, null, null, b);
+  assert.equal(joined.color, 'w');
+  const playing = games.get(r.id, joined.seat);
+  assert.equal(playing.status, 'playing');
+  assert.equal(playing.variant, 'hex');
+  assert.equal(games.get(id, b).rematch.status, 'playing', 'the finished game shows it accepted');
+  assert.throws(() => games.rematch(id, b, null, { color: 'w', times: TEN_FIVE }), err(409, /its own page/));
+});
+
+test('a rematch declined, or called off by the one who offered it; then offered again', () => {
+  const { games, id, w, b, changes } = started();
+  games.resign(id, w);
+  const r = games.rematch(id, b, null, { color: 'random', times: TEN_FIVE });
+  assert.throws(() => games.refuse(r.id, b), err(403), 'the offerer can\'t decline their own');
+  changes.length = 0;
+  games.refuse(r.id, w);
+  assert.ok(changes.includes(id) && changes.includes(r.id));
+  assert.deepEqual([games.get(id, b).rematch.status, games.get(id, b).rematch.reason], ['aborted', 'declined']);
+  assert.equal(games.get(r.id, r.seat).result.reason, 'declined');
+  assert.throws(() => games.join(r.id, null, null, w), err(409));
+  assert.throws(() => games.refuse(r.id, w), err(409));
+  // Offered again (now by the other side), and this time called off by its maker
+  const again = games.rematch(id, w, null, { color: 'w', times: TEN_FIVE });
+  assert.notEqual(again.id, r.id);
+  changes.length = 0;
+  games.abort(again.id, again.seat);
+  assert.ok(changes.includes(id), 'the finished game\'s pages hear it was called off');
+  assert.deepEqual([games.get(id, b).rematch.status, games.get(id, b).rematch.reason], ['aborted', 'aborted']);
+});
+
+test('no rematch from a game nobody else joined', () => {
+  const { games } = setup();
+  const made = games.create({ color: 'w', times: TEN_FIVE });
+  games.abort(made.id, made.seat);
+  assert.throws(() => games.rematch(made.id, made.seat, null, { color: 'b', times: TEN_FIVE }), err(409, /no one/));
+});
+
+test('a signed-in player accepts a rematch by their account, from another device', async () => {
+  const { db, games } = setup();
+  const alice = await signUp(db, 'Alice', { variant: 'chess', moves: ['e2e4'] });
+  const made = games.create({ color: 'w', times: TEN_FIVE });
+  games.join(made.id, null, alice);   // Alice plays Black, by her account
+  games.resign(made.id, made.seat);
+  const r = games.rematch(made.id, made.seat, null, { color: 'b', times: TEN_FIVE });
+  assert.equal(games.join(r.id, null, alice, null).color, 'w', 'her account proves she played the last game');
+});

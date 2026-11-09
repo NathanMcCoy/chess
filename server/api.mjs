@@ -12,6 +12,9 @@
 //   GET  /api/games/ID/events                                 -> the game, then again on every change (SSE)
 //   POST /api/games/ID/join                                   -> { seat, color }
 //   POST /api/games/ID/move { seat, move }, and /resign, /draw (offer or accept), /decline, /abort { seat }
+//   POST /api/games/ID/rematch { seat, variant, color, times } -> 201 { id, seat, color, variant }: a new
+//        game for the other player of finished game ID; they join it with /join { proof } (their seat
+//        key in ID), or decline with /refuse { proof }
 // Anything that changes something must be JSON with the header "X-Requested-With: chess", from this
 // site's own pages (Origin), so another site can't make a visitor's browser do it.
 import { HEADERS } from './headers.mjs';
@@ -175,7 +178,7 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
       }
       if (path === '/api/lobby' && req.method === 'GET') return reply(res, 200, games.lobby(present));
       if (path === '/api/lobby/events' && req.method === 'GET') return watchLobby(req, res);
-      const g = path.match(/^\/api\/games(?:\/([\w-]{1,20})(?:\/(events|join|move|resign|draw|decline|abort))?)?$/);
+      const g = path.match(/^\/api\/games(?:\/([\w-]{1,20})(?:\/(events|join|move|resign|draw|decline|abort|rematch|refuse))?)?$/);
       if (g) {
         const [, id, action] = g;
         if (!id && req.method === 'POST') {
@@ -186,11 +189,14 @@ export function makeApi({ db, secureCookies = true, now = () => Date.now() }) {
         if (id && !action && req.method === 'GET') return reply(res, 200, games.get(id, req.headers['x-seat'], me));
         if (id && action === 'events' && req.method === 'GET') return watch(req, res, id);
         if (id && action && req.method === 'POST') {
+          if (action === 'rematch' && !limits.games.take(who(req), now())) throw new AccountError(429, 'Too many new games from here. Try again later.');
           const body = await readJson(req);
-          const act = { join: () => games.join(id, body.seat, me), move: () => games.move(id, body.seat, me, body.move),
+          const act = { join: () => games.join(id, body.seat, me, body.proof), move: () => games.move(id, body.seat, me, body.move),
             resign: () => games.resign(id, body.seat, me), draw: () => games.offerDraw(id, body.seat, me),
-            decline: () => games.declineDraw(id, body.seat, me), abort: () => games.abort(id, body.seat, me) }[action];
-          return reply(res, 200, act());
+            decline: () => games.declineDraw(id, body.seat, me), abort: () => games.abort(id, body.seat, me),
+            rematch: () => games.rematch(id, body.seat, me, { variant: body.variant, color: body.color, times: body.times }),
+            refuse: () => games.refuse(id, body.proof, me) }[action];
+          return reply(res, action === 'rematch' ? 201 : 200, act());
         }
       }
       throw new AccountError(404, 'Not found');

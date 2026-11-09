@@ -4,7 +4,7 @@
 // on the chess page): /hex?g=<id> opens one.
 import hex from './variants/hex.js';
 import { hexBoard } from './boards/hexboard.js';
-import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath } from './online.js';
+import { getGame, joinGame, act, follow, clockText, timeText, askForGame, createGame, openLobby, gamePath, rematchButtons } from './online.js';
 import { RATING, RATINGS, rate, accuracy, whiteChance, evalText, fromPawns, HEX_K } from './review.js';
 
 const SAVE = 'chess.hex.v1';
@@ -102,6 +102,7 @@ const sentence = o => `${/[.!?]$/.test(o.title) ? o.title : `${o.title}.`} ${o.t
 function outcome() {
   if (!online) return played.result ? describe(played.result, vsBot ? vsBot.side : null) : null;
   const v = online.view;
+  if (v.status === 'aborted' && v.result?.reason === 'declined') return { score: '*', title: 'Declined', text: `${Them()} declined the rematch.`, outcome: 'draw' };
   if (v.status === 'aborted') return { score: '*', title: 'Called off', text: 'The game was called off.', outcome: 'draw' };
   return v.status === 'over' && v.result ? describe(v.result, online.you) : null;
 }
@@ -205,6 +206,7 @@ function render() {
     $('go-title').textContent = over.title;
     $('go-reason').textContent = over.text;
   }
+  rematch.render();
   renderOnline();
   renderClocks();
   save();
@@ -673,9 +675,10 @@ function backHere(changeAddress = true, message = null) {
 function onlineStatus(over, turn, inCheck) {
   const v = online.view, you = online.you;
   if (online.problem) return online.problem;
-  if (over) return sentence(over);
+  if (over) { const r = rematch.status(); return r ? `${sentence(over)} ${r}` : sentence(over); }
   if (v.status === 'waiting') {
     if (!you) return 'Waiting for a second player.';
+    if (v.rematchOf) return `Waiting for ${them()} to accept the rematch.`;
     return v.listed ? 'Waiting for an opponent: your game is in Live games. You can also send the link below.' : 'Waiting for your friend: send them the link below.';
   }
   let text = you ? (turn === you ? (inCheck ? 'Check! Your move.' : 'Your move.') : `${Them()}’s move.`) : `${NAME[turn]} to move.`;
@@ -690,7 +693,7 @@ function renderOnline() {
   $('auto-turn-row').hidden = !!online || !!vsBot;   // against the bot, your side stays at the bottom
   if (!online) return;
   const v = online.view, you = online.you, playing = v.status === 'playing';
-  $('ob-link-row').hidden = !(you && v.status === 'waiting');
+  $('ob-link-row').hidden = !(you && v.status === 'waiting') || !!v.rematchOf;   // a rematch is for them only: no link to send
   $('ob-link').value = `${location.origin}${gamePath(online.id, 'hex')}`;
   const theirOffer = you && playing && v.drawOffer === other(you);
   $('ob-draw').hidden = !(you && playing) || theirOffer;
@@ -795,7 +798,18 @@ function playBot() {
 
 // --- Buttons and keys ---------------------------------------------------------------------------
 $('new-game').onclick = newGame;
-$('go-new').onclick = newGame;
+// On a finished game against a person, the card's New game is the rematch (online.js)
+const rematch = rematchButtons({
+  current: () => online,
+  open: (id, variant) => {
+    if (variant !== 'hex') return location.assign(gamePath(id, variant));
+    history.pushState(null, '', gamePath(id, 'hex'));
+    openOnline(id);
+  },
+  problem: text => { if (online) online.problem = text; render(); },
+  Them,
+});
+$('go-new').onclick = () => { const a = rematch.cardAction(); if (a) rematch.click(a); else newGame(); };
 $('go-close').onclick = () => { cardClosed = true; render(); };
 $('go-review').onclick = startReview;
 $('review-game').onclick = startReview;
