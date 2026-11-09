@@ -101,7 +101,9 @@ pub struct Searcher<'a> {
 pub const PVS: u32 = 1;
 pub const NULL_MOVE: u32 = 2;
 pub const LMR: u32 = 4;
-pub const DEFAULT_FEATURES: u32 = 0;
+// All three (Nov 8): 62.4% +- 2.1 against none at 200,000 positions a move (level at 20,000:
+// reductions pay off in deeper searches); PVS and LMR alone 60.6%
+pub const DEFAULT_FEATURES: u32 = PVS | NULL_MOVE | LMR;
 const EPS: f64 = 0.001;   // a "null window": just above alpha, in pawns
 
 // One of the best lines from a position: its first move's score (pawns, for the side to move; mate
