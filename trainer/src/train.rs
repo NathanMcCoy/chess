@@ -103,7 +103,8 @@ pub struct Game { pub result: f64, pub positions: Vec<(Sample, f64)> }
 // at a move), our bot judging by a neural network (which, by number, and positions a move), or the
 // port of Felipe Lecot's engine (felipe.rs) to a fixed depth, its own way of playing
 #[derive(Clone, Copy)]
-pub enum Player { Bot(usize, u64), Net(usize, u64), Felipe(i32) }
+// Net(network, positions a move, search features: see search.rs)
+pub enum Player { Bot(usize, u64), Net(usize, u64, u32), Felipe(i32) }
 
 fn play_game(r: &Rules, s: &mut Searcher, f: &mut Felipe, opening: &[Move], weights: &[Weights], nets: &[Arc<Net>], players: [Player; 2], record: bool) -> Game {
     let mut p = r.start();
@@ -124,8 +125,8 @@ fn play_game(r: &Rules, s: &mut Searcher, f: &mut Felipe, opening: &[Move], weig
         }
         if r.drawn(&p) || ply >= MAX_PLIES { return Game { result: 0.5, positions: kept }; }
         let c = match players[p.turn as usize] {
-            Player::Bot(w, nodes) => { s.set_net(None); s.set_weights(&weights[w]); s.choose(&p, nodes) }
-            Player::Net(n, nodes) => { s.set_net(Some(nets[n].clone())); s.choose(&p, nodes) }
+            Player::Bot(w, nodes) => { s.set_net(None); s.set_weights(&weights[w]); s.features = engine::search::DEFAULT_FEATURES; s.choose(&p, nodes) }
+            Player::Net(n, nodes, features) => { s.set_net(Some(nets[n].clone())); s.features = features; s.choose(&p, nodes) }
             Player::Felipe(depth) => {
                 let c = f.choose(&p, depth);
                 // It can come back without a move (as the original would answer an impossible one):
@@ -254,17 +255,20 @@ pub fn net_match(r: &Rules, args: &[String]) {
     let nodes: u64 = num(args, "nodes", 2000);
     let nodes_b: u64 = num(args, "nodes-b", nodes);
     let games: usize = num(args, "match", 400);
+    // --features / --features-b: the search refinements each side uses (search.rs PVS 1, NULL_MOVE 2, LMR 4)
+    let features: u32 = num(args, "features", engine::search::DEFAULT_FEATURES);
+    let features_b: u32 = num(args, "features-b", engine::search::DEFAULT_FEATURES);
     let mut rng = Rng::new(num(args, "seed", 12345));
     // --vs-net B.json: against another network instead (the loop: a new network against the best)
     let vs_net = arg(args, "vs-net");
     let nets: Vec<Arc<Net>> = std::iter::once(net_file).chain(vs_net).map(load_net).collect();
     let (weights, other, vs) = match (vs_net, vs.strip_prefix("felipe:")) {
-        (Some(b), _) => (vec![starting()], Player::Net(1, nodes_b), b),
+        (Some(b), _) => (vec![starting()], Player::Net(1, nodes_b, features_b), b),
         (None, Some(d)) => (vec![starting()], Player::Felipe(d.parse().expect("felipe:<depth>")), vs),
         (None, None) => (vec![load(vs).1], Player::Bot(0, nodes_b), vs),
     };
     let t = std::time::Instant::now();
-    let m = play_between(r, &weights, &nets, Player::Net(0, nodes), other, games, threads_of(args), &mut rng);
+    let m = play_between(r, &weights, &nets, Player::Net(0, nodes, features), other, games, threads_of(args), &mut rng);
     println!("  the network {net_file} ({nodes} positions a move) against {vs}: {}, {:.0} s", m.said(), t.elapsed().as_secs_f64());
 }
 

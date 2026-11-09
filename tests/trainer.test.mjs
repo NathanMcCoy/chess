@@ -82,7 +82,9 @@ test('the Rust trainer plays the same rules and judges the same as the site', { 
 
   const seen = { ep: 0, promotion: 0, check: 0, mate: 0, stalemate: 0, drawn: 0 };
   lines.forEach((line, k) => {
-    const [state, moves, status, check, value, children, phase, extras] = line.replace(/\r$/, '').split('\t');
+    const [state, moves, status, check, value, children, phase, extras, captures] = line.replace(/\r$/, '').split('\t');
+    // The captures-only search's quicker list of captures (hex.rs legal_captures) against the full one
+    assert.equal(captures, 'ok', `position ${k}: ${states[k]}: the captures-only list`);
     const pos = e.from(states[k]);
     const where = `position ${k}: ${states[k]}`;
     assert.equal(state, e.state(pos), `${where}: the text`);

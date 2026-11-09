@@ -27,6 +27,8 @@ fn main() {
     match args.first().map(|s| s.as_str()) {
         Some("check") => check(&rules, &args),
         Some("bench") => bench(&rules, &args),
+        Some("perft") => perft(&rules, &args),
+        Some("rules-bench") => rules_bench(&rules, &args),
         Some("train") => train::train(&rules, &args),
         Some("compare") => train::compare(&rules, &args),
         Some("felipe-check") => felipe_check(&rules, &args),
@@ -166,9 +168,82 @@ fn check(rules: &hex::Rules, args: &[String]) {
         let names: Vec<&str> = moves.iter().map(|m| m.0.as_str()).collect();
         let children: Vec<&str> = moves.iter().map(|m| m.1.as_str()).collect();
         let extras: Vec<String> = rules.extras(&p).iter().map(|x| x.to_string()).collect();
-        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", rules.format(&p), names.join(" "), status, rules.in_check(&p), search::evaluate(rules, &p, &w),
-            children.join("|"), rules.phase(&p), extras.join(",")).unwrap();
+        // The captures-only search's shortcut (legal_captures: only captures and promotions made,
+        // "any legal move" by a quick look) must agree with the full list, order included
+        let full: Vec<String> = list.iter().filter(|m| m.captured != 0 || m.promo != 0).map(|m| rules.move_text(m)).collect();
+        let (mut caps, mut scratch2) = (Vec::new(), Vec::new());
+        let any = rules.legal_captures(&p, &mut caps, &mut scratch2);
+        let quick: Vec<String> = caps.iter().map(|m| rules.move_text(m)).collect();
+        let captures = if quick == full && any == !list.is_empty() { "ok".to_string() } else { format!("captures {quick:?} against {full:?}, any {any}") };
+        writeln!(out, "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}", rules.format(&p), names.join(" "), status, rules.in_check(&p), search::evaluate(rules, &p, &w),
+            children.join("|"), rules.phase(&p), extras.join(","), captures).unwrap();
     }
+}
+
+// perft --depth N: how many move sequences of N moves there are from the start (and from a middle
+// game), the standard check for a move generator: a change meant only to make it faster must give
+// the same counts. Counted with legal(); a sequence ends early at mate or stalemate.
+fn perft(rules: &hex::Rules, args: &[String]) {
+    let depth: u32 = arg(args, "depth").and_then(|s| s.parse().ok()).unwrap_or(4);
+    fn count(r: &hex::Rules, p: &hex::Pos, depth: u32, lists: &mut Vec<Vec<hex::Move>>, scratch: &mut Vec<hex::Move>) -> u64 {
+        if depth == 0 { return 1; }
+        let mut list = std::mem::take(&mut lists[depth as usize]);
+        r.legal(p, &mut list, scratch);
+        let n = if depth == 1 { list.len() as u64 } else { list.iter().map(|m| count(r, &r.play(p, m), depth - 1, lists, scratch)).sum() };
+        lists[depth as usize] = list;
+        n
+    }
+    let mut s = search::Searcher::new(rules, train::starting());
+    let mut mid = rules.start();
+    for _ in 0..16 { s.seen.insert(mid.hash); let m = s.choose(&mid, 2000).mv.unwrap(); mid = rules.play(&mid, &m); }
+    for (name, p) in [("start", rules.start()), ("move 8", mid)] {
+        let mut lists = vec![Vec::new(); depth as usize + 1];
+        let t = std::time::Instant::now();
+        let n = count(rules, &p, depth, &mut lists, &mut Vec::new());
+        println!("perft {name} depth {depth}: {n} ({:.2} s)", t.elapsed().as_secs_f64());
+    }
+}
+
+// rules-bench: the rules functions one at a time, in nanoseconds a call, on positions from the bot's
+// own games (where the search spends its time)
+fn rules_bench(rules: &hex::Rules, _args: &[String]) {
+    let mut s = search::Searcher::new(rules, train::starting());
+    let mut positions = Vec::new();
+    let mut rng = 12345u64;
+    for _ in 0..40 {
+        let mut p = rules.start();
+        s.seen.clear();
+        for ply in 0..80 {
+            positions.push(p.clone());
+            s.seen.insert(p.hash);
+            let mut list = Vec::new();
+            rules.legal(&p, &mut list, &mut Vec::new());
+            if list.is_empty() || rules.drawn(&p) { break; }
+            rng ^= rng << 13; rng ^= rng >> 7; rng ^= rng << 17;
+            let m = if ply < 6 { list[(rng % list.len() as u64) as usize] } else { s.choose(&p, 300).mv.unwrap() };
+            p = rules.play(&p, &m);
+        }
+    }
+    let (mut list, mut scratch) = (Vec::with_capacity(256), Vec::with_capacity(256));
+    let time = |name: &str, calls: usize, f: &mut dyn FnMut() -> u64| {
+        let t = std::time::Instant::now();
+        let mut sink = 0u64;
+        for _ in 0..20 { sink = sink.wrapping_add(f()); }
+        let ns = t.elapsed().as_nanos() as f64 / (20 * calls) as f64;
+        println!("{name:<22} {ns:>7.1} ns a call   ({sink})");
+    };
+    let n = positions.len();
+    let moves: usize = positions.iter().map(|p| { rules.legal(p, &mut list, &mut scratch); list.len() }).sum();
+    println!("{n} positions, {:.1} legal moves each on average", moves as f64 / n as f64);
+    time("pseudo", n, &mut || positions.iter().map(|p| { rules.pseudo(p, &mut list); list.len() as u64 }).sum());
+    time("pseudo_captures", n, &mut || positions.iter().map(|p| { rules.pseudo_captures(p, &mut list); list.len() as u64 }).sum());
+    time("legal", n, &mut || positions.iter().map(|p| { rules.legal(p, &mut list, &mut scratch); list.len() as u64 }).sum());
+    time("legal_captures", n, &mut || positions.iter().map(|p| rules.legal_captures(p, &mut list, &mut scratch) as u64 + list.len() as u64).sum());
+    time("in_check", n, &mut || positions.iter().map(|p| rules.in_check(p) as u64).sum());
+    time("drawn", n, &mut || positions.iter().map(|p| rules.drawn(p) as u64).sum());
+    let all: Vec<(usize, hex::Move)> = positions.iter().enumerate().flat_map(|(i, p)| { rules.legal(p, &mut list, &mut scratch); list.iter().map(move |m| (i, *m)).collect::<Vec<_>>() }).collect();
+    time("play (a move)", all.len(), &mut || all.iter().map(|(i, m)| rules.play(&positions[*i], m).hash & 1).sum());
+    time("safe (a move)", all.len(), &mut || all.iter().map(|(i, m)| rules.safe(&positions[*i], m) as u64).sum());
 }
 
 fn bench(rules: &hex::Rules, args: &[String]) {
@@ -196,5 +271,36 @@ fn bench(rules: &hex::Rules, args: &[String]) {
         let secs = t.elapsed().as_secs_f64();
         println!("{name}: depth {}, {} positions in {:.2} s ({:.0}/s), plays {}, score {:.2}",
             c.depth, c.nodes, secs, c.nodes as f64 / secs, rules.move_text(&c.mv.unwrap()), c.score);
+    }
+    // --suite: 16 positions along a game (every 4th move of the bot playing itself), each searched
+    // for --suite positions; the total speed, and a fingerprint of every answer (move, score, depth,
+    // positions looked at): a change meant only to be faster must leave the fingerprint as it was
+    if let Some(per) = arg(args, "suite").and_then(|s| s.parse::<u64>().ok()) {
+        let mut g = search::Searcher::new(rules, train::starting());
+        g.features = 0;   // the suite's game fixed, whatever the default (it changed once and moved the suite)
+        let mut p = rules.start();
+        let mut suite = Vec::new();
+        for i in 0..64 {
+            if i % 4 == 0 { suite.push(p.clone()); }
+            g.seen.insert(p.hash);
+            let Some(m) = g.choose(&p, 2000).mv else { break };
+            p = rules.play(&p, &m);
+        }
+        let (mut total, mut secs, mut print, mut depths) = (0u64, 0f64, 0xcbf29ce484222325u64, 0u32);
+        let features: u32 = arg(args, "features").and_then(|s| s.parse().ok()).unwrap_or(search::DEFAULT_FEATURES);
+        for pos in &suite {
+            let mut s = search::Searcher::new(rules, weights.clone());
+            s.set_net(net.clone());
+            s.features = features;
+            s.seen.insert(pos.hash);
+            let t = std::time::Instant::now();
+            let c = s.choose(pos, per);
+            depths += c.depth;
+            secs += t.elapsed().as_secs_f64();
+            total += c.nodes;
+            let text = format!("{} {:.6} {} {}", c.mv.map(|m| rules.move_text(&m)).unwrap_or_default(), c.score, c.depth, c.nodes);
+            for b in text.bytes() { print = (print ^ b as u64).wrapping_mul(0x100000001b3); }
+        }
+        println!("suite: {} positions, {total} looked at in {secs:.2} s ({:.0}/s), depth {:.2} on average, fingerprint {print:016x}", suite.len(), total as f64 / secs, depths as f64 / suite.len() as f64);
     }
 }
