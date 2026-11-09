@@ -650,6 +650,51 @@ async function hexSeed(page, start, extra = {}) {
   await page.locator('.hex-pieces piece').first().waitFor();
 }
 
+// Arrows and circles drawn with the mouse, as on the chess page (chessground): the right button
+async function hexArrows(page, who) {
+  const shapes = () => page.locator('[data-shape]').evaluateAll(s => s.map(e => e.dataset.shape));
+  const rightDrag = async (from, to, keys = []) => {
+    const [a, b] = [await hexCell(page, from), await hexCell(page, to)];
+    for (const k of keys) await page.keyboard.down(k);
+    await page.mouse.move(a.x, a.y);
+    await page.mouse.down({ button: 'right' });
+    await page.mouse.move((a.x + b.x) / 2, (a.y + b.y) / 2, { steps: 3 });
+    await page.mouse.move(b.x, b.y, { steps: 3 });
+    await page.mouse.up({ button: 'right' });
+    for (const k of keys) await page.keyboard.up(k);
+    await page.waitForTimeout(16);
+  };
+  const before = JSON.stringify(await hexMoves(page));
+  await rightDrag('f3', 'f6');
+  check(who, JSON.stringify(await shapes()) === '["arrow f3 f6 green"]', 'a right-button drag draws a green arrow', JSON.stringify(await shapes()));
+  // It starts on the first cell's centre on screen, and points at the second's
+  const ends = await page.locator('[data-shape="arrow f3 f6 green"]').evaluate(l => {
+    const m = l.getScreenCTM(), pt = (x, y) => new DOMPoint(x, y).matrixTransform(m);
+    const a = pt(l.x1.baseVal.value, l.y1.baseVal.value), b = pt(l.x2.baseVal.value, l.y2.baseVal.value);
+    return { ax: a.x, ay: a.y, bx: b.x, by: b.y };
+  });
+  const [c3, c6] = [await hexCell(page, 'f3'), await hexCell(page, 'f6')];
+  const along = ((ends.bx - ends.ax) * (c6.x - c3.x) + (ends.by - ends.ay) * (c6.y - c3.y)) / Math.hypot(ends.bx - ends.ax, ends.by - ends.ay) / Math.hypot(c6.x - c3.x, c6.y - c3.y);
+  check(who, Math.hypot(ends.ax - c3.x, ends.ay - c3.y) < 2 && along > 0.999, 'the arrow lines up with the cells on screen',
+    `start ${Math.round(Math.hypot(ends.ax - c3.x, ends.ay - c3.y))}px off, direction ${along.toFixed(4)}`);
+  check(who, JSON.stringify(await hexMoves(page)) === before && (await page.locator('[data-dest]').count()) === 0,
+    'drawing neither moves nor picks up a piece');
+  await rightDrag('e7', 'e7');
+  await rightDrag('c2', 'c4', ['Shift']);
+  check(who, JSON.stringify(await shapes()) === '["arrow f3 f6 green","circle e7 green","arrow c2 c4 red"]',
+    'letting go on the same cell draws a circle, and with Shift the arrow is red', JSON.stringify(await shapes()));
+  await rightDrag('f3', 'f6');
+  check(who, JSON.stringify(await shapes()) === '["circle e7 green","arrow c2 c4 red"]', 'drawing the same arrow again takes it away', JSON.stringify(await shapes()));
+  const menu = await page.evaluate(() => {
+    const e = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button: 2 });
+    document.querySelector('#hexboard polygon[data-cell="f6"]').dispatchEvent(e);
+    return e.defaultPrevented;
+  });
+  check(who, menu, 'the browser’s right-click menu doesn’t open over the board');
+  await hexTap(page, 'e7', false);   // an empty cell (Black's pawn left it)
+  check(who, (await shapes()).length === 0, 'a plain click clears the drawing', JSON.stringify(await shapes()));
+}
+
 async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await page.goto('/');
   check(who, (await page.locator('a[href="/hex"]').count()) === 1, 'the chess page links to hexagonal chess');
@@ -688,6 +733,7 @@ async function hexFlow(page, who, { touch, mouse, freshPage }) {
   await hexTap(page, 'f6', touch);
   await hexMove(page, 'e7', 'e6', touch);
   check(who, JSON.stringify(await hexMoves(page)) === '["f6","e6"]', 'moves are played and named', JSON.stringify(await hexMoves(page)));
+  if (!touch) await hexArrows(page, who);
   check(who, (await page.evaluate(() => scrollY)) === 0, 'playing a move doesn’t scroll the page', `${await page.evaluate(() => scrollY)}px`);
   // In a long game the list scrolls itself to the latest move, and the page still doesn't move
   {
