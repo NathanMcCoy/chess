@@ -12,6 +12,7 @@
   --dark-sq: #7f9fb0;
   --highlight: rgba(242, 196, 109, 0.55);
   --dest: rgba(16, 58, 79, 0.45);
+  --premove: rgba(150, 50, 40, 0.4);
   --danger: #e06c5a;
   /* Move ratings in the review, best to worst */
   --r-best: #7fd18b;
@@ -129,6 +130,10 @@ cg-board square.oc.move-dest { background: radial-gradient(transparent 0 78%, va
 /* Hovering a square you can move to: the dot (or capture ring) stays, with the square tinted under it */
 cg-board square.move-dest:hover { background: radial-gradient(var(--dest) 19%, transparent 21%), rgba(16, 58, 79, 0.22); }
 cg-board square.oc.move-dest:hover { background: radial-gradient(transparent 0 78%, var(--dest) 80%), rgba(16, 58, 79, 0.22); }
+/* Premoves: where the piece could go (on the other side's turn), and the move waiting to be played */
+cg-board square.premove-dest { background: radial-gradient(var(--premove) 19%, transparent 21%); }
+cg-board square.oc.premove-dest { background: radial-gradient(transparent 0 78%, var(--premove) 80%); }
+cg-board square.current-premove { background-color: rgba(180, 60, 50, 0.45); }
 cg-board square.check { background: radial-gradient(ellipse at center, rgba(224, 60, 40, 1) 0%, rgba(224, 60, 40, 0.8) 30%, rgba(224, 60, 40, 0) 80%); }
 /* Coordinates inside the edge squares: ranks top-left of the left column, files bottom-right of
    the bottom row. (chessground's own placement sits partly outside the board.) */

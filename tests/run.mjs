@@ -202,6 +202,18 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     && /level 9/.test(await page.locator('#top-player .name').innerText()), 'Rematch starts again as Black at the same level');
   await page.waitForFunction(() => document.querySelector('#status').textContent === 'Your move.');
 
+  // A premove while Stockfish thinks (level 10 thinks 2 s): marked at once, played after its reply
+  await seed(page, { pgn: '1. e4 e5 *', player: 'b', level: 10, orientation: 'black' });
+  await page.waitForFunction(() => /thinking/.test(document.querySelector('#status').textContent));
+  await move(page, 'g8', 'f6', touch);
+  // Drawn on the next screen refresh, so give it a moment (still fails if it never comes)
+  await page.locator('#board square.current-premove').first().waitFor({ timeout: 1000 }).catch(() => {});
+  const marked = await page.locator('#board square.current-premove').count();
+  check(who, marked === 2 && (await moveCount(page)) === 2, 'a move while Stockfish thinks waits as a premove', `${marked} squares marked`);
+  await waitMoves(page, 4, 'Stockfish replying, then the premove');
+  const nf6 = (await page.locator('#moves button').nth(3).innerText()).replace(/^\W+/, '');
+  check(who, nf6 === 'Nf6' && (await page.locator('#board square.current-premove').count()) === 0, 'it’s played as soon as Stockfish has moved', nf6);
+
   // Checkmate (a saved game one move from Fool's Mate, you as Black)
   await seed(page, { pgn: '1. f3 e5 2. g4 *', player: 'b', level: 1, orientation: 'black' });
   await move(page, 'd8', 'h4', touch);
@@ -490,9 +502,28 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     await host.waitForTimeout(1200);
     const [mine] = await clocks(host);
     check(who, /^2:5\d$/.test(mine) && await host.locator('#bottom-player .clock.running').count() === 1, 'the maker’s clock now counts down from 3:00', mine);
+    // A move out of turn is a premove: shown, not sent, and played as soon as the turn comes
     await move(guest, 'd7', 'd5', touch);
     await guest.waitForTimeout(300);
-    check(who, (await guest.locator('#moves button').count()) === 2, 'a move out of turn isn’t played');
+    const premoved = await guest.locator('#board square.current-premove').count();
+    check(who, (await guest.locator('#moves button').count()) === 2 && premoved === 2 && (await host.locator('#moves button').count()) === 2,
+      'a move out of turn waits as a premove, unsent', `${premoved} squares marked`);
+    await move(host, 'g1', 'f3', touch);
+    await host.waitForFunction(() => document.querySelectorAll('#moves button').length === 4);
+    const four = JSON.stringify(await host.locator('#moves button').allInnerTexts());
+    check(who, four === '["e4","e5","Nf3","d5"]' && (await guest.locator('#board square.current-premove').count()) === 0 && (await status(host)) === 'Your move.',
+      'the premove is played the moment the friend’s turn comes', four);
+    // One that isn't legal when the turn comes is dropped: dxe4, but the host takes on d5 first
+    await move(guest, 'd5', 'e4', touch);
+    await guest.waitForTimeout(300);
+    check(who, (await guest.locator('#board square.current-premove').count()) === 2, 'a second premove waits too');
+    await move(host, 'e4', 'd5', touch);
+    await guest.waitForFunction(() => document.querySelectorAll('#moves button').length === 5);
+    await guest.waitForTimeout(300);
+    check(who, (await guest.locator('#moves button').count()) === 5 && (await guest.locator('#board square.current-premove').count()) === 0 && (await status(guest)) === 'Your move.',
+      'a premove that’s no longer legal is dropped, and it’s the friend’s move', await status(guest));
+    await move(guest, 'd8', 'd5', touch);
+    await host.waitForFunction(() => document.querySelectorAll('#moves button').length === 6);
 
     // A draw: offered by the maker, accepted by the friend
     await host.locator('#ob-draw').click();
@@ -501,12 +532,12 @@ async function flow(page, who, { touch, mouse, freshPage }) {
     await guest.locator('#ob-accept').click();
     for (const p of [host, guest]) await p.locator('#gameover:not([hidden])').waitFor();
     check(who, (await host.locator('#go-title').innerText()) === 'Draw' && (await guest.locator('#go-title').innerText()) === 'Draw'
-      && /^A draw, by agreement\. 3\+2 against 10\+5, 1 move\.$/.test(await host.locator('#go-reason').innerText()), 'both see the draw', await host.locator('#go-reason').innerText());
+      && /^A draw, by agreement\. 3\+2 against 10\+5, 3 moves\.$/.test(await host.locator('#go-reason').innerText()), 'both see the draw', await host.locator('#go-reason').innerText());
 
     // Someone else with the link watches: the game, but no moves of theirs
     const watcher = await freshPage();
     await watcher.goto(link);
-    await watcher.waitForFunction(() => document.querySelectorAll('#moves button').length === 2);
+    await watcher.waitForFunction(() => document.querySelectorAll('#moves button').length === 6);
     check(who, /draw, by agreement/.test(await status(watcher)) && await watcher.locator('#ob-draw').isHidden(), 'a third person can watch it');
 
     // Back to Stockfish: the game against it is as it was
