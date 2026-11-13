@@ -100,8 +100,10 @@ const board = Chessground($('board'), {
   coordinates: true,
   animation: { enabled: true, duration: 180 },
   highlight: { lastMove: true, check: true },
-  movable: { free: false, showDests: true, events: { after: (from, to) => onBoardMove(from, to) } },
-  premovable: { enabled: false },
+  movable: { free: false, showDests: true, events: { after: (from, to, meta) => onBoardMove(from, to, meta) } },
+  // Premoves: a move made while it's the other side's turn waits (shown in red) and is played the
+  // moment your turn comes, if it's legal then; a tap anywhere else cancels it
+  premovable: { enabled: true, showDests: true, castle: true },
   draggable: { enabled: true, showGhost: true },
   drawable: { enabled: true, visible: true, eraseOnClick: true },
 });
@@ -122,14 +124,17 @@ function render() {
   const pos = live ? game : new Chess(fen);
   const last = moves[shown - 1];
   const mine = online ? online.you : player;   // watching a game: nobody's moves are yours
-  const yourTurn = live && !result && !busy && !engineError && !!mine && game.turn() === mine && (!online || online.view.status === 'playing');
+  const yourGame = live && !result && !engineError && !!mine && (!online || online.view.status === 'playing');
+  const yourTurn = yourGame && !busy && game.turn() === mine;
+  if (!yourGame) board.cancelPremove();   // looking back, game over, or not your game
   board.set({
     fen,
     orientation,
     turnColor: COLOR[pos.turn()],
     lastMove: last ? [last.from, last.to] : undefined,
     check: pos.inCheck(),
-    movable: { color: yourTurn ? COLOR[mine] : undefined, dests: yourTurn ? legalMoves(pos) : new Map() },
+    // Your pieces stay movable on the other side's turn too: those moves become premoves
+    movable: { color: yourGame ? COLOR[mine] : undefined, dests: yourTurn ? legalMoves(pos) : new Map() },
   });
   renderMoves(moves, shown);
   renderStatus(live, shown);
@@ -145,6 +150,9 @@ function render() {
   rematch.render();
   renderOnline();
   renderClocks();
+  // Your turn has come: play the waiting premove, if it's legal now (chessground drops it if not,
+  // and calls onBoardMove a moment later if it is)
+  if (yourTurn) board.playPremove();
 }
 
 function renderMoves(moves, shown) {
@@ -235,11 +243,12 @@ function renderPlayers(pos) {
 }
 
 // --- Playing ---------------------------------------------------------------------------------
-async function onBoardMove(from, to) {
+async function onBoardMove(from, to, meta) {
   const piece = game.get(from);
   let promotion;
   if (piece && piece.type === 'p' && (to[1] === '8' || to[1] === '1')) {
-    promotion = await choosePromotion();
+    // A premoved promotion becomes a queen: there's no time to ask
+    promotion = meta?.premove ? 'q' : await choosePromotion();
     if (!promotion) return render();   // changed their mind: put the pawn back
   }
   try {
@@ -350,6 +359,7 @@ function stopEngine() {
 
 function takeBack() {
   stopEngine();
+  board.cancelPremove();
   if (result) { result = null; game.setHeader('Result', '*'); }   // taking back reopens a finished game
   dropReview();
   while (game.history().length) {
@@ -365,6 +375,7 @@ function newGame(side, newLevel) {
   if (online) { leaveOnline(); if (location.search) history.pushState(null, '', location.pathname); }
   notice = null;
   stopEngine();
+  board.cancelPremove();
   engine.newGame();
   game = new Chess();
   player = side;
@@ -791,6 +802,7 @@ async function onlineAction(action, ask) {
 function leaveOnline() {
   if (!online) return;
   online.stop?.();
+  board.cancelPremove();
   clearInterval(clockTimer);
   online = null;
   document.body.classList.remove('online');
