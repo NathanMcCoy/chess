@@ -1,7 +1,10 @@
-# Tests every pull request and every push to main; on main, also builds and publishes the image
-# ghcr.io/nathanmccoy/chess:main. When the green tick appears on the commit, press "Update from GitHub"
-# at https://apps.pacificfish.ca and the server deploys exactly that image.
 name: Test and publish
+
+# A PR runs every test, side by side on several machines, and builds the image (not pushed).
+# A push to main publishes ghcr.io/nathanmccoy/chess:main. If the push is the merge of a PR whose
+# files are exactly the merged result and whose run passed, the tests aren't run a second time.
+# The image is built alongside the tests and pushed under its commit; :main moves to it only once
+# the tests have passed (or were rightly skipped), so a broken push never becomes :main.
 
 on:
   push:
@@ -12,13 +15,39 @@ on:
 permissions:
   contents: read
   packages: write
+  actions: read               # the gate looks up the PR's run
 
 concurrency:                  # a newer push cancels an older run of the same branch still going
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      tested: ${{ steps.check.outputs.tested }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 2      # the merge commit and both its parents
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tested=false
+          if [ "$GITHUB_EVENT_NAME" = push ] && pr=$(git rev-parse -q --verify 'HEAD^2') \
+             && [ "$(git rev-parse 'HEAD^{tree}')" = "$(git rev-parse 'HEAD^2^{tree}')" ]; then
+            passed=$(gh run list -R "$GITHUB_REPOSITORY" --workflow publish.yml --commit "$pr" --event pull_request \
+                     --status success --json databaseId --jq length)
+            if [ "${passed:-0}" -gt 0 ]; then tested=true; fi
+            echo "Merged PR head $pr has the same files; passing PR runs: ${passed:-0}"
+          fi
+          echo "tested=$tested" >> "$GITHUB_OUTPUT"
+          echo "Already tested: $tested"
+
+  unit:
+    needs: gate
+    if: needs.gate.outputs.tested != 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -27,13 +56,46 @@ jobs:
           node-version: 24
           cache: npm
       - run: npm ci
-      # The browsers the tests use: WebKit (Safari's engine) for iPhone, Chromium for Android and desktop
-      - run: npx playwright install --with-deps chromium webkit
-      - run: npm test
+      - run: node --test "tests/*.test.mjs"
+
+  browsers:
+    needs: gate
+    if: needs.gate.outputs.tested != 'true'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { device: iPhone, browser: webkit }
+          - { device: Android, browser: chromium }
+          - { device: Desktop, browser: chromium }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+      - run: npm ci
+      - id: pw
+        run: echo "version=$(node -p "require('playwright/package.json').version")" >> "$GITHUB_OUTPUT"
+      - id: browsers
+        uses: actions/cache@v5
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.pw.outputs.version }}-${{ matrix.browser }}
+      - if: steps.browsers.outputs.cache-hit != 'true'
+        run: npx playwright install --with-deps ${{ matrix.browser }}
+      - if: steps.browsers.outputs.cache-hit == 'true'
+        run: npx playwright install-deps ${{ matrix.browser }}
+      - run: node tests/run.mjs
+        env:
+          ONLY_DEVICES: ${{ matrix.device }}
 
   image:
-    needs: test               # a broken push never becomes an image
+    needs: gate               # built alongside the tests; :main only moves in publish, after them
     runs-on: ubuntu-latest
+    outputs:
+      image: ${{ steps.name.outputs.image }}
     steps:
       - uses: actions/checkout@v5
       - uses: docker/setup-buildx-action@v3
@@ -43,21 +105,34 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      # Image names must be lowercase: NathanMcCoy/chess -> ghcr.io/nathanmccoy/chess
       - id: name
         run: echo "image=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
-      # On a pull request the image is only built, to prove the Dockerfile works; on main it's published
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64
           push: ${{ github.event_name != 'pull_request' }}
-          tags: |
-            ${{ steps.name.outputs.image }}:main
-            ${{ steps.name.outputs.image }}:${{ github.sha }}
+          tags: ${{ steps.name.outputs.image }}:${{ github.sha }}
           labels: |
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.revision=${{ github.sha }}
             org.opencontainers.image.licenses=GPL-3.0-or-later
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  publish:
+    needs: [gate, unit, browsers, image]
+    # Runs even when the tests were skipped, but only if they passed or were rightly skipped
+    if: >-
+      always() && github.event_name != 'pull_request' && needs.image.result == 'success' &&
+      (needs.gate.outputs.tested == 'true' || (needs.unit.result == 'success' && needs.browsers.result == 'success'))
+    runs-on: ubuntu-latest
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Move :main to this commit's image
+        run: docker buildx imagetools create -t "${{ needs.image.outputs.image }}:main" "${{ needs.image.outputs.image }}:${{ github.sha }}"

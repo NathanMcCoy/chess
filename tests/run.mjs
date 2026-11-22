@@ -1276,7 +1276,11 @@ const dataDir = remote ? null : mkdtempSync(join(tmpdir(), 'chess-browser-'));
 const server = remote ? null : await start({ port: 0, host: '127.0.0.1', dataDir, secureCookies: false });
 const BASE = remote ? remote.replace(/\/$/, '') : `http://127.0.0.1:${server.address().port}`;
 console.log(`Testing ${BASE}`);
-await Promise.all(Object.keys(DEVICES).map(onDevice));
+// ONLY_DEVICES=iPhone (or "Android,Desktop") runs just those: CI gives each device its own machine
+const only = (process.env.ONLY_DEVICES || '').split(',').map(s => s.trim()).filter(Boolean);
+const unknown = only.filter(d => !DEVICES[d]);
+if (unknown.length) { console.error(`No device called ${unknown.join(', ')}. There are: ${Object.keys(DEVICES).join(', ')}`); process.exit(2); }
+await Promise.all(Object.keys(DEVICES).filter(d => !only.length || only.includes(d)).map(onDevice));
 if (server) {
   const closed = new Promise(r => server.close(r));
   server.closeAllConnections();
