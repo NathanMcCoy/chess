@@ -4,7 +4,7 @@
 // request (no preflight) with credentials, and that a failed send is kept and sent later.
 import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { chromium, webkit } from 'playwright';
 import { start } from '../server/server.mjs';
 
@@ -18,8 +18,11 @@ test('the bug button is the same file as the admin site’s', { skip: !process.e
   assert.equal(readFileSync(new URL('../site/js/bugreport.js', import.meta.url), 'utf8'), readFileSync(process.env.ADMIN_COPY, 'utf8'));
 });
 
+// CI installs one browser per job (and none in the unit job): a browser that isn't here is skipped
+const wanted = process.env.BROWSER;   // Settlers' CI: chromium, webkit or none
 for (const [name, engine] of [['Chromium', chromium], ['WebKit', webkit]]) {
-  test(`bug button in ${name}`, async () => {
+  const skip = wanted && wanted !== name.toLowerCase() ? `BROWSER=${wanted}` : !existsSync(engine.executablePath()) && `${name} isn't installed`;
+  test(`bug button in ${name}`, { skip }, async () => {
     const browser = await engine.launch();
     try {
       const page = await browser.newPage({ viewport: { width: 1000, height: 760 } });

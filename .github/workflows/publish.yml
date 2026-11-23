@@ -90,6 +90,9 @@ jobs:
       - run: node tests/run.mjs
         env:
           ONLY_DEVICES: ${{ matrix.device }}
+      # The bug button in this job's browser (the unit job has none, so it skips it there)
+      - if: matrix.device != 'Android'
+        run: node --test tests/bugreport.test.mjs
 
   image:
     needs: gate               # built alongside the tests; :main only moves in publish, after them
