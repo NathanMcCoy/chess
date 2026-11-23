@@ -6,9 +6,10 @@
 //     (which the policy below would block).
 //   Content-Security-Policy: only files from this site may run, load or be fetched. 'wasm-unsafe-eval'
 //     lets Stockfish compile its WebAssembly; data: images are the piece set's built-in pictures.
+//     admin.pacificfish.ca: the bug button (js/bugreport.js) sends its reports there.
 export const HEADERS = {
   'Cache-Control': 'no-cache, no-transform',
-  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
+  'Content-Security-Policy': "default-src 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self' https://admin.pacificfish.ca; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'",
   'X-Content-Type-Options': 'nosniff',
   'Referrer-Policy': 'strict-origin-when-cross-origin',
   'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
