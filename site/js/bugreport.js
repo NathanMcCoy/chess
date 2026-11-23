@@ -6,7 +6,7 @@
 // are in chess (site/js/bugreport.js), Syed Settlers (site/js/bugreport.js) and Honed
 // (src/dev/bugreport.js). Change it here and copy it over the others.
 //
-// Use: BugReport.init({ app: 'chess', endpoint: 'https://admin.pacificfish.ca/api/bugs' }), or a
+// Use: BugReport.init({ app: 'chess', endpoint: 'https://bugs.pacificfish.ca/api/bugs' }), or a
 // <script src=".../bugreport.js" data-app="chess" data-endpoint="..."> tag (it starts itself).
 //   always: true   shows the button for everyone (the admin site, which only you can open).
 //   Otherwise it's off until this browser opens any page of the app with ?bugs=on (?bugs=off hides it
@@ -25,10 +25,12 @@
 // something else, "Use a picture instead" attaches a screenshot made the normal way.
 //
 // Sending: from another pacificfish.ca site it's a plain cross-origin POST (Content-Type text/plain,
-// so no preflight) with credentials; admin.pacificfish.ca is the same *site*, so the browser sends its
-// Cloudflare Access cookie and the server checks the Origin against its list. If this browser isn't
-// signed in to the admin site, the report is kept on this device (IndexedDB) and sent next time, and
-// it can be downloaded as a file.
+// so no preflight) with credentials to bugs.pacificfish.ca: the admin server, behind its own Access
+// application that lets in the admins and the reporters (Matt), and that can only take new reports.
+// It's the same *site*, so the browser sends that hostname's Access cookie, and the server checks the
+// Origin against its list. If this browser isn't signed in there, the report is kept on this device
+// (IndexedDB) and the box offers "Sign in to send" (bugs.pacificfish.ca/signin, which comes back here;
+// the kept report is sent when the page loads again), and it can be downloaded as a file.
 (function () {
   'use strict';
   if (window.BugReport) return;
@@ -374,11 +376,11 @@
         body: JSON.stringify(report),
       });
     } catch {
-      throw new Error('Couldn’t reach the admin site. Is this browser signed in to admin.pacificfish.ca?');
+      throw new Error(same ? 'Couldn’t reach the admin site.' : 'Couldn’t send it: this browser may not be signed in for bug reports yet.');
     }
     let reply = {};
     try { reply = await r.json(); } catch { /* not JSON: a sign-in page */ }
-    if (!r.ok) throw new Error(reply.error || `The admin site answered ${r.status}`);
+    if (!r.ok) throw new Error(reply.error ? reply.error + '.' : `The bug report server answered ${r.status}.`);
     return reply;
   }
 
@@ -510,6 +512,14 @@
       });
     }
     let kept = null;
+    // Another site: sending needs this browser signed in at the bug server once. In this tab (a Home
+    // Screen app has its own sign-ins, and a new tab would open in Safari instead); it comes back here.
+    const signInLink = () => {
+      const target = new URL(opts.endpoint, location.href);
+      if (target.origin === location.origin) return;
+      const href = `${target.origin}/signin?then=${encodeURIComponent(location.href)}`;
+      status.append(' ', el('a', 'color:#7cc4fa;font-weight:600;', { href, className: 'bugreport-signin', textContent: 'Sign in to send' }));
+    };
     save.onclick = async () => {
       save.disabled = cancel.disabled = true;
       status.style.color = '#a0aec0';
@@ -529,6 +539,7 @@
         } catch {
           status.textContent = `${e.message} It couldn’t be kept on this device either: download it instead.`;
         }
+        signInLink();
         status.style.color = '#f6ad55';
         download.style.display = '';
         cancel.textContent = 'Close';
@@ -542,7 +553,8 @@
           const left = await sendQueued();
           if (!left) { status.style.color = '#68d391'; status.textContent = 'Sent. Thanks!'; await wait(800); close(); return; }
           status.style.color = '#f6ad55';
-          status.textContent = 'Still couldn’t reach the admin site. It stays on this device for next time.';
+          status.textContent = 'Still couldn’t send it. It stays on this device for next time.';
+          signInLink();
           save.disabled = false;
         };
         showBadge(1);
@@ -644,7 +656,7 @@
 
   function init(options) {
     if (opts) return;
-    opts = { app: 'app', endpoint: 'https://admin.pacificfish.ca/api/bugs', always: false, ...options };
+    opts = { app: 'app', endpoint: 'https://bugs.pacificfish.ca/api/bugs', always: false, ...options };
     // ?bugs=on or ?bugs=off: remembered by this browser, then taken out of the address
     try {
       const u = new URL(location.href);
