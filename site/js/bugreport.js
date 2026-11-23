@@ -473,7 +473,7 @@
       preview.style.display = picture ? 'block' : 'none';
       includeLabel.style.display = picture ? 'flex' : 'none';
       if (picture) preview.src = picture.image;
-      previewNote.textContent = picture ? (source === 'file' ? 'Your picture.' : 'The page as it was. Tap it to see it bigger.')
+      previewNote.textContent = picture ? (source === 'file' ? 'Your picture.' : 'The page as it was, redrawn (not a screenshot). Tap it to see it bigger. If it doesn’t match your screen, use a real screenshot instead.')
         : `No picture of the page${shotError ? ` (${shotError})` : ''}. You can add one with “Use a picture instead”.`;
     }
     showPicture();
